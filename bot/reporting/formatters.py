@@ -32,11 +32,9 @@ def week_summary_text(week: str, rows: list[dict[str, Any]]) -> str:
                 r["PlayerName"],
                 format_value(metric, r["Value"]),
             ]
-            for i, r in enumerate(items[:15], start=1)
+            for i, r in enumerate(items, start=1)
         ]
         parts.append(markdown_table(["#", "Player", "Value"], table_rows))
-        if len(items) > 15:
-            parts.append(f"_…and {len(items) - 15} more_")
         parts.append("")
     return "\n".join(parts).strip()
 

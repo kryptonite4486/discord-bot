@@ -8,6 +8,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.utils.guild import guild_id_from_context, guild_id_from_interaction
+
 log = logging.getLogger(__name__)
 
 
@@ -41,14 +43,11 @@ class Admin(commands.Cog):
     async def sync(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
+        assert guild is not None  # enforced by central guild-only interaction check
         try:
-            if guild is not None:
-                self.bot.tree.copy_global_to(guild=guild)
-                synced = await self.bot.tree.sync(guild=guild)
-                scope = f"guild {guild.id}"
-            else:
-                synced = await self.bot.tree.sync()
-                scope = "global"
+            self.bot.tree.copy_global_to(guild=guild)
+            synced = await self.bot.tree.sync(guild=guild)
+            scope = f"guild {guild.id}"
         except Exception as exc:
             log.exception("Command sync failed")
             await interaction.followup.send(f"Sync failed: `{exc}`", ephemeral=True)
@@ -59,15 +58,20 @@ class Admin(commands.Cog):
             ephemeral=True,
         )
 
-    @admin.command(name="stats", description="Show datastore statistics")
+    @admin.command(name="stats", description="Show datastore statistics for this server")
     @app_commands.checks.has_permissions(administrator=True)
     async def stats(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        stats = await self.bot.db.stats()
+        guild_id = guild_id_from_interaction(interaction)
+        stats = await self.bot.db.stats(guild_id)
         by_metric = "\n".join(
             f"• {k}: {v}" for k, v in sorted(stats["by_metric"].items())
         ) or "_none_"
-        embed = discord.Embed(title="Datastore Stats", color=discord.Color.blurple())
+        embed = discord.Embed(
+            title="Datastore Stats (this server)",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Guild", value=guild_id, inline=False)
         embed.add_field(name="Rows", value=str(stats["rows"]))
         embed.add_field(name="Players", value=str(stats["players"]))
         embed.add_field(name="Weeks", value=str(stats["weeks"]))
@@ -111,20 +115,18 @@ class Admin(commands.Cog):
     @commands.command(name="sync")
     @commands.has_permissions(administrator=True)
     async def sync_prefix(self, ctx: commands.Context) -> None:
-        if ctx.guild:
-            self.bot.tree.copy_global_to(guild=ctx.guild)
-            synced = await self.bot.tree.sync(guild=ctx.guild)
-            await ctx.reply(f"Synced **{len(synced)}** guild commands.")
-        else:
-            synced = await self.bot.tree.sync()
-            await ctx.reply(f"Synced **{len(synced)}** global commands.")
+        assert ctx.guild is not None  # enforced by central guild-only bot check
+        self.bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await self.bot.tree.sync(guild=ctx.guild)
+        await ctx.reply(f"Synced **{len(synced)}** guild commands.")
 
     @commands.command(name="dbstats")
     @commands.has_permissions(administrator=True)
     async def stats_prefix(self, ctx: commands.Context) -> None:
-        stats = await self.bot.db.stats()
+        guild_id = guild_id_from_context(ctx)
+        stats = await self.bot.db.stats(guild_id)
         await ctx.reply(
-            f"Rows={stats['rows']} Players={stats['players']} "
+            f"Guild={guild_id} Rows={stats['rows']} Players={stats['players']} "
             f"Weeks={stats['weeks']} Metrics={stats['by_metric']}"
         )
 

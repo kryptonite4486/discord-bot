@@ -91,16 +91,21 @@ def leaderboard_bar_chart(
     metric: str,
     week: str,
     rows: list[dict[str, Any]],
+    top_n: int = 40,
 ) -> io.BytesIO | None:
     if not rows:
         return None
 
-    names = [r["PlayerName"] for r in rows][::-1]
-    values = [r["Value"] for r in rows][::-1]
+    subset = rows[:top_n]
+    names = [r["PlayerName"] for r in subset][::-1]
+    values = [r["Value"] for r in subset][::-1]
 
     fig, ax = plt.subplots(figsize=(9, max(3.5, 0.35 * len(names) + 1)))
     ax.barh(names, values, color="#3b82f6")
-    ax.set_title(f"{metric} Leaderboard — {week}")
+    title = f"{metric} Leaderboard — {week}"
+    if len(rows) > top_n:
+        title += f" (top {top_n} of {len(rows)})"
+    ax.set_title(title)
     ax.set_xlabel(metric)
     ax.grid(True, axis="x", alpha=0.3)
     fig.tight_layout()

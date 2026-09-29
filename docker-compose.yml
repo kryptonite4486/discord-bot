@@ -11,6 +11,10 @@ services:
     environment:
       - DATABASE_PATH=/app/data/weekly.db
       - EASYOCR_MODULE_PATH=/app/.EasyOCR
+    # Reach oMLX / other services on the Mac host (Docker Desktop provides
+    # host.docker.internal; host-gateway covers Linux Compose as well).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   easyocr-cache:

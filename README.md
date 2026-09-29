@@ -6,9 +6,10 @@ Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Te
 
 - Slash + prefix commands via cogs (`admin`, `ingest`, `reports`)
 - Message Content intent for OCR channel auto-ingest
-- SQLite fact table `WeeklyMetrics` at `/app/data/weekly.db`
-- Manual `/add`, pasted CSV/text `/ingest text`, and OCR `/ingest image`
+- SQLite fact table `WeeklyMetrics` at `/app/data/weekly.db`, **partitioned per Discord server** (`GuildId`)
+- Manual `/add`, pasted CSV/text `/ingest text`, OCR `/ingest image` / `/ingest batch`
 - Reports: weekly summary, player trends, growth, leaderboards, PNG charts
+- **Server-only**: DMs are rejected; every command runs in a guild context
 
 ## Quick start (Docker)
 
@@ -18,7 +19,7 @@ Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Te
 
 ```bash
 cp .env.example .env
-# edit DISCORD_TOKEN (and optional OCR_CHANNEL_ID / DEV_GUILD_ID)
+# edit DISCORD_TOKEN (and optional OCR_CHANNEL_ID / DEV_GUILD_ID / LEGACY_GUILD_ID)
 ```
 
 4. Build and run:
@@ -43,6 +44,25 @@ python -m bot.main
 
 Tesseract must be installed on the host if `OCR_ENGINE=tesseract`. EasyOCR downloads models on first use.
 
+### Vision OCR (oMLX / Qwen2.5-VL)
+
+Set `OCR_ENGINE=vision` to use a local OpenAI-compatible vision server (e.g. oMLX) instead of EasyOCR/Tesseract:
+
+| Variable | Default | Notes |
+|----------|---------|--------|
+| `OCR_VISION_BASE_URL` | `http://127.0.0.1:8000/v1` | Use `http://host.docker.internal:8000/v1` when the bot runs in Docker on Mac |
+| `OCR_VISION_MODEL` | `Qwen2.5-VL-7B-Instruct` | Must match the name registered in oMLX |
+| `OCR_VISION_API_KEY` | _(empty)_ | Put your oMLX API token here; requests still send `Authorization` if blank |
+| `OCR_VISION_TIMEOUT` | `120` | Seconds |
+
+`docker-compose.yml` maps `host.docker.internal` to the host gateway so the container can reach oMLX on the Mac. After setting the key, rebuild/restart:
+
+```bash
+docker compose up --build -d
+```
+
+Slash commands `/ingest image` and `/ingest batch` are unchanged — only the OCR backend switches.
+
 ## Commands
 
 ### Admin
@@ -58,10 +78,13 @@ Tesseract must be installed on the host if `OCR_ENGINE=tesseract`. EasyOCR downl
 | `/add versus <player> <value> [week]` | Add versus points |
 | `/add tech <player> <value> [week]` | Add tech contribution |
 | `/add general <player> <hq> <power> [week]` | Add HQ + Power |
-| `/ingest image <image> [dataset] [week]` | OCR screenshot |
+| `/ingest image <image…> [dataset] [week]` | OCR up to 10 screenshots on this command |
+| `/ingest batch <dataset> [week]` | Collect up to 20 images across messages, then OCR |
 | `/ingest text <dataset> <data> [week]` | Paste CSV/text rows |
 
-Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Monday).
+Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunday).
+
+`/ingest image` accepts up to **10** attachment slots (`image` … `image10`) — Discord’s per-message limit. Multi-select on a single slot usually only sends the first file; fill slots separately or use **`/ingest batch`** for larger Versus/Tech dumps (send several messages of up to 10, then type `done`).
 
 ### Reports
 | Command | Description |
@@ -78,13 +101,13 @@ Prefix equivalents use `COMMAND_PREFIX` (default `!`), e.g. `!addversus`, `!repo
 
 ## OCR channel auto-ingest
 
-Set `OCR_CHANNEL_ID` to a Discord channel ID. Images posted there are parsed automatically.
+Set `OCR_CHANNEL_ID` to a Discord channel ID. Images posted there are parsed automatically (up to **10** images per message — Discord’s attachment limit). For up to **20** across messages, use `/ingest batch`.
 
 Optional message text:
-- `versus` / `tech` / `general` — force dataset type
+- `versus` / `tech` / `general` / `power` — force dataset type
 - second token can be a week (`current`, `last`, or `YYYY-MM-DD`)
 
-Example: `general current` + attach member-list screenshot.
+Example: `general current` + attach member-list screenshots.
 
 ### Screenshot types
 
@@ -96,15 +119,27 @@ Example: `general current` + attach member-list screenshot.
 
 ## Data model
 
+Metrics are scoped by Discord server. Two servers using the same bot never share rows.
+
 ```sql
 WeeklyMetrics (
-  WeekStart  TEXT,   -- ISO Monday YYYY-MM-DD
+  GuildId    TEXT,   -- Discord guild snowflake (string)
+  WeekStart  TEXT,   -- Sunday YYYY-MM-DD
   PlayerName TEXT,   -- identity key
   MetricType TEXT,   -- VersusPoints | TechContribution | HQLevel | Power
   Value      REAL,
-  PRIMARY KEY (WeekStart, PlayerName, MetricType)
+  PRIMARY KEY (GuildId, WeekStart, PlayerName, MetricType)
 )
 ```
+
+### Migrating an existing database
+
+On startup, if `WeeklyMetrics` exists without `GuildId`, the bot rebuilds the table and assigns every existing row a guild:
+
+1. Set `LEGACY_GUILD_ID` to your Discord server’s snowflake ID (Developer Mode → right-click server → Copy Server ID) **before** the first upgraded start.
+2. If `LEGACY_GUILD_ID` is unset, rows are tagged `GuildId=legacy` and a warning is logged (you can still query them only under that literal id).
+
+Fresh databases skip migration and create the new schema directly.
 
 ## Project layout
 
@@ -114,7 +149,7 @@ bot/
   config.py         # env settings
   cogs/             # admin, ingest, reports
   db/               # SQLite helpers
-  ocr/              # EasyOCR / Tesseract pipeline
+  ocr/              # EasyOCR / Tesseract / vision (oMLX) pipeline
   reporting/        # markdown + matplotlib
   utils/            # logging, parsing
 data/               # persistent volume (weekly.db)

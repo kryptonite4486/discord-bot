@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from bot.config import resolve_metric
 from bot.reporting import charts, formatters
+from bot.utils.guild import guild_id_from_context, guild_id_from_interaction
 from bot.utils.parsing import chunk_message, parse_week_start
 
 log = logging.getLogger(__name__)
@@ -58,8 +59,9 @@ class Reports(commands.Cog):
         week: str | None = None,
     ) -> None:
         await interaction.response.defer()
+        guild_id = guild_id_from_interaction(interaction)
         week_start = parse_week_start(week)
-        rows = await self.bot.db.get_week_metrics(week_start)
+        rows = await self.bot.db.get_week_metrics(guild_id, week_start)
         text = formatters.week_summary_text(week_start, rows)
         await self._send_text(interaction, text)
 
@@ -72,7 +74,8 @@ class Reports(commands.Cog):
         chart: bool = True,
     ) -> None:
         await interaction.response.defer()
-        rows = await self.bot.db.get_player_metrics(name)
+        guild_id = guild_id_from_interaction(interaction)
+        rows = await self.bot.db.get_player_metrics(guild_id, name)
         text = formatters.player_report_text(name, rows)
         png = charts.player_trend_chart(name, rows) if chart and rows else None
         file = discord.File(png, filename=f"{name}_trend.png") if png else None
@@ -106,8 +109,9 @@ class Reports(commands.Cog):
         weeks: app_commands.Range[int, 2, 26] = 8,
     ) -> None:
         await interaction.response.defer()
+        guild_id = guild_id_from_interaction(interaction)
         metric_type = resolve_metric(metric.value)
-        rows = await self.bot.db.get_trends(metric_type, weeks=weeks)
+        rows = await self.bot.db.get_trends(guild_id, metric_type, weeks=weeks)
         text = formatters.trend_summary_text(metric_type, rows)
         png = charts.metric_trend_chart(metric_type, rows)
         file = discord.File(png, filename=f"{metric_type}_trend.png") if png else None
@@ -123,8 +127,9 @@ class Reports(commands.Cog):
         weeks: app_commands.Range[int, 2, 26] = 4,
     ) -> None:
         await interaction.response.defer()
+        guild_id = guild_id_from_interaction(interaction)
         metric_type = resolve_metric(metric.value)
-        rows = await self.bot.db.get_growth_rates(metric_type, weeks=weeks)
+        rows = await self.bot.db.get_growth_rates(guild_id, metric_type, weeks=weeks)
         text = formatters.growth_report_text(metric_type, weeks, rows)
         png = charts.growth_bar_chart(metric_type, rows)
         file = discord.File(png, filename=f"{metric_type}_growth.png") if png else None
@@ -134,7 +139,7 @@ class Reports(commands.Cog):
     @app_commands.describe(
         metric="Metric to rank",
         week="Week start YYYY-MM-DD / current / last",
-        limit="Max players to show",
+        limit="Optional max players (default: all for the week)",
     )
     @app_commands.choices(metric=METRIC_CHOICES)
     async def report_leaderboard(
@@ -142,7 +147,7 @@ class Reports(commands.Cog):
         interaction: discord.Interaction,
         metric: app_commands.Choice[str],
         week: str | None = None,
-        limit: app_commands.Range[int, 5, 50] = 25,
+        limit: app_commands.Range[int, 5, 500] | None = None,
     ) -> None:
         metric_type = resolve_metric(metric.value)
         await self._metric_leaderboard(interaction, metric_type, week, limit=limit)
@@ -152,28 +157,38 @@ class Reports(commands.Cog):
         interaction: discord.Interaction,
         metric_type: str,
         week: str | None,
-        limit: int = 25,
+        limit: int | None = None,
     ) -> None:
         if not interaction.response.is_done():
             await interaction.response.defer()
+        guild_id = guild_id_from_interaction(interaction)
         week_start = parse_week_start(week) if week else None
-        rows = await self.bot.db.get_leaderboard(metric_type, week_start=week_start, limit=limit)
+        rows = await self.bot.db.get_leaderboard(
+            guild_id, metric_type, week_start=week_start, limit=limit
+        )
         resolved_week = rows[0]["WeekStart"] if rows else (week_start or "n/a")
         text = formatters.leaderboard_text(metric_type, str(resolved_week), rows)
-        png = charts.leaderboard_bar_chart(metric_type, str(resolved_week), rows)
+        chart_cap = 40
+        png = charts.leaderboard_bar_chart(
+            metric_type, str(resolved_week), rows, top_n=chart_cap
+        )
+        if png and len(rows) > chart_cap:
+            text += f"\n\n(Chart shows top {chart_cap} of {len(rows)} players.)"
         file = discord.File(png, filename=f"{metric_type}_leaderboard.png") if png else None
         await self._send_text(interaction, text, file=file)
 
     # Prefix fallbacks
     @commands.command(name="reportweek")
     async def report_week_prefix(self, ctx: commands.Context, week: str | None = None) -> None:
+        guild_id = guild_id_from_context(ctx)
         week_start = parse_week_start(week)
-        rows = await self.bot.db.get_week_metrics(week_start)
+        rows = await self.bot.db.get_week_metrics(guild_id, week_start)
         await ctx.reply(formatters.week_summary_text(week_start, rows)[:1900])
 
     @commands.command(name="reportplayer")
     async def report_player_prefix(self, ctx: commands.Context, *, name: str) -> None:
-        rows = await self.bot.db.get_player_metrics(name)
+        guild_id = guild_id_from_context(ctx)
+        rows = await self.bot.db.get_player_metrics(guild_id, name)
         text = formatters.player_report_text(name, rows)
         png = charts.player_trend_chart(name, rows)
         if png:

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 # Allow `python tests/test_parsing.py` from repo root
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ from bot.utils.parsing import (  # noqa: E402
     parse_week_start,
 )
 from bot.db import Database  # noqa: E402
+from bot.db.database import LEGACY_GUILD_FALLBACK  # noqa: E402
 
 
 class ParseNumericTests(unittest.TestCase):
@@ -35,13 +37,25 @@ class ParseNumericTests(unittest.TestCase):
 
 
 class WeekTests(unittest.TestCase):
-    def test_explicit_monday(self) -> None:
-        # 2026-09-28 is a Monday
-        self.assertEqual(parse_week_start("2026-09-28"), "2026-09-28")
+    def test_explicit_sunday(self) -> None:
+        # 2026-09-20 is a Sunday — stays as week start
+        self.assertEqual(parse_week_start("2026-09-20"), "2026-09-20")
 
-    def test_normalize_to_monday(self) -> None:
-        # 2026-09-30 is Wednesday -> Monday 2026-09-28
-        self.assertEqual(parse_week_start("2026-09-30"), "2026-09-28")
+    def test_normalize_to_sunday(self) -> None:
+        # 2026-09-23 is Wednesday -> Sunday 2026-09-20
+        self.assertEqual(parse_week_start("2026-09-23"), "2026-09-20")
+
+    def test_current_and_last_sunday_boundaries(self) -> None:
+        # Freeze "today" to Wednesday 2026-09-24 within the week of Sunday 2026-09-20
+        class FixedDate(date):
+            @classmethod
+            def today(cls) -> date:
+                return date(2026, 9, 24)
+
+        with patch("bot.utils.parsing.date", FixedDate):
+            self.assertEqual(parse_week_start("current"), "2026-09-20")
+            self.assertEqual(parse_week_start("last"), "2026-09-13")
+            self.assertEqual(parse_week_start(None), "2026-09-20")
 
 
 class PasteTests(unittest.TestCase):
@@ -60,24 +74,107 @@ class FormatTests(unittest.TestCase):
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_upsert_and_query(self) -> None:
+        guild_a = "111"
+        guild_b = "222"
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "test.db")
             await db.connect()
-            await db.upsert_metric("2026-09-28", "PrincessPea", "HQLevel", 24)
-            await db.upsert_metric("2026-09-28", "PrincessPea", "Power", 65_400_000)
-            await db.upsert_metric("2026-09-28", "EnemyHelicopter", "VersusPoints", 112_257_938)
+            await db.upsert_metric(guild_a, "2026-09-28", "PrincessPea", "HQLevel", 24)
+            await db.upsert_metric(
+                guild_a, "2026-09-28", "PrincessPea", "Power", 65_400_000
+            )
+            await db.upsert_metric(
+                guild_a, "2026-09-28", "EnemyHelicopter", "VersusPoints", 112_257_938
+            )
+            await db.upsert_metric(
+                guild_b, "2026-09-28", "OtherServerPlayer", "VersusPoints", 99.0
+            )
 
-            week = await db.get_week_metrics("2026-09-28")
+            week = await db.get_week_metrics(guild_a, "2026-09-28")
             self.assertEqual(len(week), 3)
 
-            player = await db.get_player_metrics("princesspea")
+            player = await db.get_player_metrics(guild_a, "princesspea")
             self.assertEqual(len(player), 2)
 
-            board = await db.get_leaderboard("VersusPoints", "2026-09-28")
+            board = await db.get_leaderboard(guild_a, "VersusPoints", "2026-09-28")
             self.assertEqual(board[0]["PlayerName"], "EnemyHelicopter")
 
-            stats = await db.stats()
+            other = await db.get_week_metrics(guild_b, "2026-09-28")
+            self.assertEqual(len(other), 1)
+            self.assertEqual(other[0]["PlayerName"], "OtherServerPlayer")
+
+            stats = await db.stats(guild_a)
             self.assertEqual(stats["rows"], 3)
+            self.assertEqual(stats["guild_id"], guild_a)
+            await db.close()
+
+    async def test_migrate_with_legacy_guild_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            # Seed a pre-GuildId schema
+            import aiosqlite
+
+            async with aiosqlite.connect(path) as raw:
+                await raw.executescript(
+                    """
+                    CREATE TABLE WeeklyMetrics (
+                        WeekStart   TEXT    NOT NULL,
+                        PlayerName  TEXT    NOT NULL,
+                        MetricType  TEXT    NOT NULL,
+                        Value       REAL    NOT NULL,
+                        UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                        PRIMARY KEY (WeekStart, PlayerName, MetricType)
+                    );
+                    """
+                )
+                await raw.execute(
+                    """
+                    INSERT INTO WeeklyMetrics (WeekStart, PlayerName, MetricType, Value)
+                    VALUES ('2026-09-28', 'Alice', 'Power', 1000)
+                    """
+                )
+                await raw.commit()
+
+            db = Database(path, legacy_guild_id="999888777")
+            await db.connect()
+            rows = await db.get_week_metrics("999888777", "2026-09-28")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["PlayerName"], "Alice")
+            empty = await db.get_week_metrics(LEGACY_GUILD_FALLBACK, "2026-09-28")
+            self.assertEqual(len(empty), 0)
+            await db.close()
+
+    async def test_migrate_without_legacy_guild_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy2.db"
+            import aiosqlite
+
+            async with aiosqlite.connect(path) as raw:
+                await raw.executescript(
+                    """
+                    CREATE TABLE WeeklyMetrics (
+                        WeekStart   TEXT    NOT NULL,
+                        PlayerName  TEXT    NOT NULL,
+                        MetricType  TEXT    NOT NULL,
+                        Value       REAL    NOT NULL,
+                        UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                        PRIMARY KEY (WeekStart, PlayerName, MetricType)
+                    );
+                    """
+                )
+                await raw.execute(
+                    """
+                    INSERT INTO WeeklyMetrics (WeekStart, PlayerName, MetricType, Value)
+                    VALUES ('2026-09-28', 'Bob', 'HQLevel', 20)
+                    """
+                )
+                await raw.commit()
+
+            db = Database(path)
+            await db.connect()
+            rows = await db.get_week_metrics(LEGACY_GUILD_FALLBACK, "2026-09-28")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["PlayerName"], "Bob")
             await db.close()
 
 

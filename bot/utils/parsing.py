@@ -15,29 +15,29 @@ POWER_SUFFIX_RE = re.compile(
 NUMBER_IN_TEXT_RE = re.compile(r"[\d,.]+")
 
 
-def monday_of(d: date | None = None) -> date:
-    """Return the Monday (ISO week start) for the given date."""
+def sunday_of(d: date | None = None) -> date:
+    """Return the Sunday (week start) for the given date."""
     d = d or date.today()
-    return d - timedelta(days=d.weekday())
+    return d - timedelta(days=(d.weekday() + 1) % 7)
 
 
 def parse_week_start(value: str | None) -> str:
     """
-    Parse a week identifier into an ISO Monday date string.
+    Parse a week identifier into a Sunday week-start date string.
 
     Accepts:
-      - YYYY-MM-DD (normalized to that week's Monday)
-      - 'current' / 'this' / empty -> current week's Monday
-      - 'last' -> previous week's Monday
+      - YYYY-MM-DD (normalized to that week's Sunday)
+      - 'current' / 'this' / empty -> current week's Sunday
+      - 'last' -> previous week's Sunday
     """
     if value is None or not str(value).strip():
-        return monday_of().isoformat()
+        return sunday_of().isoformat()
 
     raw = str(value).strip().lower()
     if raw in {"current", "this", "now", "today"}:
-        return monday_of().isoformat()
+        return sunday_of().isoformat()
     if raw in {"last", "prev", "previous"}:
-        return monday_of(date.today() - timedelta(days=7)).isoformat()
+        return sunday_of(date.today() - timedelta(days=7)).isoformat()
 
     if not WEEK_RE.match(raw):
         raise ValueError(
@@ -45,7 +45,7 @@ def parse_week_start(value: str | None) -> str:
         )
 
     parsed = datetime.strptime(raw, "%Y-%m-%d").date()
-    return monday_of(parsed).isoformat()
+    return sunday_of(parsed).isoformat()
 
 
 def parse_numeric_value(raw: str | int | float) -> float:
