@@ -156,64 +156,9 @@ class Admin(commands.Cog):
         embed.set_footer(text=stats["path"])
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @admin.command(
-        name="assign-channel",
-        description=(
-            "Phase 1 backfill: assign unassigned rows in this server to a channel"
-        ),
-    )
-    @app_commands.describe(
-        channel=(
-            "Target channel (default: current channel). "
-            "Only updates rows with empty ChannelId."
-        ),
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def assign_channel(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel | None = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        guild_id = guild_id_from_interaction(interaction)
-        target = channel or interaction.channel
-        if target is None or not isinstance(target, discord.abc.GuildChannel):
-            await interaction.followup.send(
-                "Could not resolve a target channel.", ephemeral=True
-            )
-            return
-        if target.guild is None or str(target.guild.id) != guild_id:
-            await interaction.followup.send(
-                "Channel must belong to this server.", ephemeral=True
-            )
-            return
-
-        before = await self.bot.db.count_unassigned(guild_id)
-        updated = await self.bot.db.assign_channel(
-            guild_id, str(target.id), only_unassigned=True
-        )
-        remaining = await self.bot.db.count_unassigned(guild_id)
-        log.info(
-            "assign-channel guild=%s channel=%s updated=%s remaining=%s by %s",
-            guild_id,
-            target.id,
-            updated,
-            remaining,
-            interaction.user,
-        )
-        await interaction.followup.send(
-            f"Assigned **{updated}** unassigned row(s) "
-            f"(was {before}) to {target.mention} (`{target.id}`).\n"
-            f"Unassigned remaining in this server: **{remaining}**.\n"
-            "_Run once per server after deploying Phase 1; "
-            "re-run is safe (0 rows if already assigned)._",
-            ephemeral=True,
-        )
-
     @reload.error
     @sync.error
     @stats.error
-    @assign_channel.error
     async def admin_error(
         self,
         interaction: discord.Interaction,

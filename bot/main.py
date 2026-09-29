@@ -66,6 +66,15 @@ class WeeklyMetricsBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.connect()
+        unassigned = await self.db.count_all_unassigned()
+        if unassigned:
+            log.warning(
+                "Phase 2 channel isolation is on, but %d row(s) still have "
+                "empty ChannelId. Those rows are hidden from channel-scoped "
+                "reports until reassigned. Deploy Phase 1 + /admin assign-channel "
+                "before Phase 2 if this is unexpected.",
+                unassigned,
+            )
         for ext in COGS:
             await self.load_extension(ext)
             log.info("Loaded extension %s", ext)

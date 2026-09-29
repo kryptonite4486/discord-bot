@@ -119,13 +119,13 @@ Example: `general current` + attach member-list screenshots.
 
 ## Data model
 
-Metrics are scoped by Discord **server** (`GuildId`). Phase 1 also stores an optional
-**channel** tag (`ChannelId`) so multiple datasets can coexist in one guild later.
+Metrics are scoped by Discord **server** (`GuildId`) and **channel** (`ChannelId`).
+Two servers never share rows; within a server, each channel is its own dataset.
 
 ```sql
 WeeklyMetrics (
   GuildId    TEXT,   -- Discord guild snowflake (string)
-  ChannelId  TEXT,   -- Discord channel snowflake; '' = unassigned (pre-backfill)
+  ChannelId  TEXT,   -- Discord channel snowflake (empty only for legacy leftovers)
   WeekStart  TEXT,   -- Sunday YYYY-MM-DD
   PlayerName TEXT,   -- identity key
   MetricType TEXT,   -- VersusPoints | TechContribution | HQLevel | Power
@@ -134,18 +134,20 @@ WeeklyMetrics (
 )
 ```
 
-New ingest writes the current channel’s ID. During Phase 1, channel reports also include
-rows with empty `ChannelId` so historical data stays visible until backfill.
+Ingest always writes the current channel’s ID. Default reports filter to the current
+channel. Pass `scope: Entire server` on report commands for a multi-channel breakout
+(one row per player+channel; values are **not** merged across channels).
 
-### Channel backfill (Phase 1)
+### Channel backfill (before Phase 2)
 
-After deploying Phase 1, in each server that already has data:
+If you still have rows with empty `ChannelId` from Phase 1:
 
-1. Enable Discord Developer Mode → right-click the primary metrics channel → **Copy Channel ID**.
-2. Run `/admin assign-channel` in that server (defaults to the current channel, or pass `channel`).
-3. Confirm `/admin stats` shows **Unassigned channel rows = 0**.
+1. Stay on the Phase 1 deploy and run `/admin assign-channel` in each server.
+2. Confirm `/admin stats` shows **Unassigned channel rows = 0**.
+3. Then deploy this Phase 2 build (strict channel filter; `assign-channel` removed).
 
-Phase 2 (separate deploy) will enforce strict channel isolation and remove `assign-channel`.
+Phase 2 logs a startup warning if any unassigned rows remain (they are hidden from
+channel-scoped reports).
 
 ### Migrating an existing database
 
@@ -154,7 +156,7 @@ On startup, if `WeeklyMetrics` exists without `GuildId`, the bot rebuilds the ta
 1. Set `LEGACY_GUILD_ID` to your Discord server’s snowflake ID (Developer Mode → right-click server → Copy Server ID) **before** the first upgraded start.
 2. If `LEGACY_GUILD_ID` is unset, rows are tagged `GuildId=legacy` and a warning is logged (you can still query them only under that literal id).
 
-If the table has `GuildId` but no `ChannelId`, startup adds `ChannelId` default `''` (unassigned) for all existing rows.
+If the table has `GuildId` but no `ChannelId`, startup adds `ChannelId` default `''` (unassigned) for all existing rows — backfill those before relying on Phase 2 isolation.
 
 Fresh databases skip migration and create the new schema directly.
 

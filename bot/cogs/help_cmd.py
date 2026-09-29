@@ -11,17 +11,15 @@ from bot.utils.parsing import chunk_message
 HELP_TEXT = """\
 **Weekly Metrics Bot — Commands**
 
-Data is stored **per Discord server**. Commands only work in a server (DMs unsupported).
-New ingest tags the **current channel**. Reports in Phase 1 also include unassigned
-(pre-backfill) rows for this server. After deploy, an admin should run
-`/admin assign-channel` once per server.
+Data is stored **per Discord server + channel**. Commands only work in a server
+(DMs unsupported). Default reports use the **current channel**; pass
+`scope: Entire server` for a multi-channel breakout (same server only).
 
 ```
 Admin
   /admin reload          Reload a cog module
   /admin sync            Sync slash commands
   /admin stats           Datastore statistics (this server)
-  /admin assign-channel  Backfill unassigned rows → a channel (Phase 1)
 
 Add / Ingest
   /add versus       Add Versus Points for a player
@@ -39,6 +37,7 @@ Reports
   /report trend     Multi-week metric trends
   /report growth    Top/bottom 15 growth + full .md file
   /report leaderboard  Ranked list (all; optional limit) + chart
+  (all reports accept scope: This channel | Entire server)
 
 Help
   /help             Show this command list

@@ -173,6 +173,58 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.assign_channel("g1", "ch-a"), 0)
             await db.close()
 
+    async def test_phase2_channel_excludes_unassigned_and_other_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "p2.db")
+            await db.connect()
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Alice", "Power", 1000, channel_id=""
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Bob", "Power", 2000, channel_id="ch-a"
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Carol", "Power", 3000, channel_id="ch-b"
+            )
+
+            # Phase 2 default: include_unassigned=False
+            channel_a = await db.get_week_metrics(
+                "g1", "2026-09-28", channel_id="ch-a"
+            )
+            self.assertEqual([r["PlayerName"] for r in channel_a], ["Bob"])
+
+            # Server scope: all channels, no cross-player merge
+            server = await db.get_week_metrics("g1", "2026-09-28", channel_id=None)
+            self.assertEqual(
+                {(r["PlayerName"], r["ChannelId"]) for r in server},
+                {("Alice", ""), ("Bob", "ch-a"), ("Carol", "ch-b")},
+            )
+            self.assertEqual(await db.count_all_unassigned(), 1)
+            await db.close()
+
+    async def test_growth_does_not_merge_across_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "growth.db")
+            await db.connect()
+            await db.upsert_metric(
+                "g1", "2026-09-14", "Same", "Power", 1000, channel_id="ch-a"
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-21", "Same", "Power", 2000, channel_id="ch-a"
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-14", "Same", "Power", 500, channel_id="ch-b"
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-21", "Same", "Power", 600, channel_id="ch-b"
+            )
+            rows = await db.get_growth_rates("g1", "Power", weeks=4, channel_id=None)
+            self.assertEqual(len(rows), 2)
+            by_ch = {r["ChannelId"]: r for r in rows}
+            self.assertAlmostEqual(by_ch["ch-a"]["GrowthPct"], 100.0)
+            self.assertAlmostEqual(by_ch["ch-b"]["GrowthPct"], 20.0)
+            await db.close()
+
     async def test_migrate_add_channel_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "guild_only.db"

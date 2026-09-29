@@ -320,6 +320,16 @@ class Database:
         ) as cursor:
             return int((await cursor.fetchone())["c"])
 
+    async def count_all_unassigned(self) -> int:
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM WeeklyMetrics
+            WHERE ChannelId = ?
+            """,
+            (UNASSIGNED_CHANNEL_ID,),
+        ) as cursor:
+            return int((await cursor.fetchone())["c"])
+
     async def get_player_metrics(
         self,
         guild_id: str,
@@ -328,7 +338,7 @@ class Database:
         limit: int | None = None,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         clauses = ["GuildId = ?", "PlayerName = ? COLLATE NOCASE"]
         params: list[Any] = [guild_id, player_name]
@@ -363,7 +373,7 @@ class Database:
         metric_type: str | None = None,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         extra_sql, extra_params = self._channel_scope_sql(
             channel_id=channel_id, include_unassigned=include_unassigned
@@ -397,7 +407,7 @@ class Database:
         player_name: str | None = None,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         """Return recent weekly values for a metric, optionally for one player."""
         extra_sql, extra_params = self._channel_scope_sql(
@@ -448,7 +458,7 @@ class Database:
         weeks: int = 4,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         trends = await self.get_trends(
             guild_id,
@@ -457,12 +467,13 @@ class Database:
             channel_id=channel_id,
             include_unassigned=include_unassigned,
         )
-        by_player: dict[str, list[dict[str, Any]]] = {}
+        by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in trends:
-            by_player.setdefault(row["PlayerName"], []).append(row)
+            key = (row["PlayerName"], str(row.get("ChannelId") or ""))
+            by_key.setdefault(key, []).append(row)
 
         results: list[dict[str, Any]] = []
-        for player, series in by_player.items():
+        for (player, ch_id), series in by_key.items():
             if len(series) < 2:
                 continue
             first, last = series[0], series[-1]
@@ -471,6 +482,7 @@ class Database:
             results.append(
                 {
                     "PlayerName": player,
+                    "ChannelId": ch_id,
                     "FirstWeek": first["WeekStart"],
                     "LastWeek": last["WeekStart"],
                     "FirstValue": first["Value"],
@@ -493,7 +505,7 @@ class Database:
         limit: int | None = None,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         extra_sql, extra_params = self._channel_scope_sql(
             channel_id=channel_id, include_unassigned=include_unassigned
@@ -533,7 +545,7 @@ class Database:
         limit: int = 52,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[str]:
         extra_sql, extra_params = self._channel_scope_sql(
             channel_id=channel_id, include_unassigned=include_unassigned
@@ -554,7 +566,7 @@ class Database:
         guild_id: str,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> list[str]:
         extra_sql, extra_params = self._channel_scope_sql(
             channel_id=channel_id, include_unassigned=include_unassigned
@@ -575,7 +587,7 @@ class Database:
         guild_id: str,
         *,
         channel_id: str | None = None,
-        include_unassigned: bool = True,
+        include_unassigned: bool = False,
     ) -> dict[str, Any]:
         extra_sql, extra_params = self._channel_scope_sql(
             channel_id=channel_id, include_unassigned=include_unassigned
