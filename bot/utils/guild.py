@@ -40,3 +40,20 @@ def guild_id_from_context(ctx: commands.Context) -> str:
     if ctx.guild is None:
         raise RuntimeError("guild_id required; context is not in a guild")
     return str(ctx.guild.id)
+
+
+def channel_id_from_interaction(interaction: discord.Interaction) -> str:
+    """Discord channel snowflake for the interaction (TEXT storage)."""
+    if interaction.channel_id is None:
+        raise RuntimeError("channel_id required; interaction has no channel")
+    return str(interaction.channel_id)
+
+
+def channel_id_from_context(ctx: commands.Context) -> str:
+    if ctx.channel is None:
+        raise RuntimeError("channel_id required; context has no channel")
+    return str(ctx.channel.id)
+
+
+def channel_id_from_message(message: discord.Message) -> str:
+    return str(message.channel.id)

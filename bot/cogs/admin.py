@@ -86,24 +86,49 @@ class Admin(commands.Cog):
         )
 
     @admin.command(name="sync", description="Sync slash commands with Discord")
+    @app_commands.describe(
+        scope="Where to register commands (this server is instant; global can take up to 1 hour)",
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="This server (instant)", value="guild"),
+            app_commands.Choice(name="All servers the bot is in (instant)", value="all"),
+            app_commands.Choice(name="Global (can take up to 1 hour)", value="global"),
+        ]
+    )
     @app_commands.checks.has_permissions(administrator=True)
-    async def sync(self, interaction: discord.Interaction) -> None:
+    async def sync(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str] | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        assert guild is not None  # enforced by central guild-only interaction check
+        assert guild is not None
+        mode = scope.value if scope else "guild"
         try:
-            self.bot.tree.copy_global_to(guild=guild)
-            synced = await self.bot.tree.sync(guild=guild)
-            scope = f"guild {guild.id}"
+            if mode == "global":
+                synced = await self.bot.tree.sync()
+                msg = f"Synced **{len(synced)}** global commands (may take up to ~1 hour to appear everywhere)."
+            elif mode == "all":
+                counts: list[str] = []
+                for g in list(self.bot.guilds):
+                    self.bot.tree.copy_global_to(guild=g)
+                    synced = await self.bot.tree.sync(guild=g)
+                    counts.append(f"{g.name}: {len(synced)}")
+                msg = "Synced guild commands for all servers:\n" + "\n".join(
+                    f"• {c}" for c in counts
+                )
+            else:
+                self.bot.tree.copy_global_to(guild=guild)
+                synced = await self.bot.tree.sync(guild=guild)
+                msg = f"Synced **{len(synced)}** commands to **{guild.name}** (instant)."
         except Exception as exc:
             log.exception("Command sync failed")
             await interaction.followup.send(f"Sync failed: `{exc}`", ephemeral=True)
             return
-        log.info("Synced %d commands (%s) by %s", len(synced), scope, interaction.user)
-        await interaction.followup.send(
-            f"Synced **{len(synced)}** commands ({scope}).",
-            ephemeral=True,
-        )
+        log.info("Synced commands mode=%s by %s", mode, interaction.user)
+        await interaction.followup.send(msg, ephemeral=True)
 
     @admin.command(name="stats", description="Show datastore statistics for this server")
     @app_commands.checks.has_permissions(administrator=True)
@@ -122,13 +147,73 @@ class Admin(commands.Cog):
         embed.add_field(name="Rows", value=str(stats["rows"]))
         embed.add_field(name="Players", value=str(stats["players"]))
         embed.add_field(name="Weeks", value=str(stats["weeks"]))
+        embed.add_field(
+            name="Unassigned channel rows",
+            value=str(stats["unassigned_rows"]),
+            inline=False,
+        )
         embed.add_field(name="By Metric", value=by_metric, inline=False)
         embed.set_footer(text=stats["path"])
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @admin.command(
+        name="assign-channel",
+        description=(
+            "Phase 1 backfill: assign unassigned rows in this server to a channel"
+        ),
+    )
+    @app_commands.describe(
+        channel=(
+            "Target channel (default: current channel). "
+            "Only updates rows with empty ChannelId."
+        ),
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def assign_channel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild_id = guild_id_from_interaction(interaction)
+        target = channel or interaction.channel
+        if target is None or not isinstance(target, discord.abc.GuildChannel):
+            await interaction.followup.send(
+                "Could not resolve a target channel.", ephemeral=True
+            )
+            return
+        if target.guild is None or str(target.guild.id) != guild_id:
+            await interaction.followup.send(
+                "Channel must belong to this server.", ephemeral=True
+            )
+            return
+
+        before = await self.bot.db.count_unassigned(guild_id)
+        updated = await self.bot.db.assign_channel(
+            guild_id, str(target.id), only_unassigned=True
+        )
+        remaining = await self.bot.db.count_unassigned(guild_id)
+        log.info(
+            "assign-channel guild=%s channel=%s updated=%s remaining=%s by %s",
+            guild_id,
+            target.id,
+            updated,
+            remaining,
+            interaction.user,
+        )
+        await interaction.followup.send(
+            f"Assigned **{updated}** unassigned row(s) "
+            f"(was {before}) to {target.mention} (`{target.id}`).\n"
+            f"Unassigned remaining in this server: **{remaining}**.\n"
+            "_Run once per server after deploying Phase 1; "
+            "re-run is safe (0 rows if already assigned)._",
+            ephemeral=True,
+        )
+
     @reload.error
     @sync.error
     @stats.error
+    @assign_channel.error
     async def admin_error(
         self,
         interaction: discord.Interaction,
@@ -163,12 +248,29 @@ class Admin(commands.Cog):
 
     @commands.command(name="sync")
     @commands.has_permissions(administrator=True)
-    async def sync_prefix(self, ctx: commands.Context) -> None:
-        assert ctx.guild is not None  # enforced by central guild-only bot check
+    async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
+        """Sync slash commands. Usage: !sync [guild|all|global] — run !sync in a new server to register commands instantly."""
+        assert ctx.guild is not None
+        mode = (scope or "guild").strip().lower()
+        if mode in {"all", "every", "guilds"}:
+            lines = []
+            for g in list(self.bot.guilds):
+                self.bot.tree.copy_global_to(guild=g)
+                synced = await self.bot.tree.sync(guild=g)
+                lines.append(f"• {g.name}: {len(synced)}")
+            await ctx.reply("Synced all servers:\n" + "\n".join(lines))
+            return
+        if mode in {"global", "globals"}:
+            synced = await self.bot.tree.sync()
+            await ctx.reply(
+                f"Synced **{len(synced)}** global commands (may take up to ~1 hour)."
+            )
+            return
         self.bot.tree.copy_global_to(guild=ctx.guild)
         synced = await self.bot.tree.sync(guild=ctx.guild)
-        await ctx.reply(f"Synced **{len(synced)}** guild commands.")
-
+        await ctx.reply(
+            f"Synced **{len(synced)}** commands to **{ctx.guild.name}** (instant)."
+        )
     @commands.command(name="dbstats")
     @commands.has_permissions(administrator=True)
     async def stats_prefix(self, ctx: commands.Context) -> None:
@@ -176,7 +278,8 @@ class Admin(commands.Cog):
         stats = await self.bot.db.stats(guild_id)
         await ctx.reply(
             f"Guild={guild_id} Rows={stats['rows']} Players={stats['players']} "
-            f"Weeks={stats['weeks']} Metrics={stats['by_metric']}"
+            f"Weeks={stats['weeks']} Unassigned={stats['unassigned_rows']} "
+            f"Metrics={stats['by_metric']}"
         )
 
 

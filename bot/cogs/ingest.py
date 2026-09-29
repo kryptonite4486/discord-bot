@@ -13,7 +13,13 @@ from discord.ext import commands
 
 from bot.config import resolve_metric
 from bot.ocr import OCREngine, extract_metrics_from_image
-from bot.utils.guild import guild_id_from_context, guild_id_from_interaction
+from bot.utils.guild import (
+    channel_id_from_context,
+    channel_id_from_interaction,
+    channel_id_from_message,
+    guild_id_from_context,
+    guild_id_from_interaction,
+)
 from bot.utils.parsing import (
     format_value,
     parse_numeric_value,
@@ -190,14 +196,25 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild_id = guild_id_from_interaction(interaction)
+            channel_id = channel_id_from_interaction(interaction)
             week_start = self._default_week(week)
             hq_val = parse_numeric_value(hq)
             power_val = parse_numeric_value(power)
             await self.bot.db.upsert_metric(
-                guild_id, week_start, player, "HQLevel", hq_val
+                guild_id,
+                week_start,
+                player,
+                "HQLevel",
+                hq_val,
+                channel_id=channel_id,
             )
             await self.bot.db.upsert_metric(
-                guild_id, week_start, player, "Power", power_val
+                guild_id,
+                week_start,
+                player,
+                "Power",
+                power_val,
+                channel_id=channel_id,
             )
         except Exception as exc:
             log.exception("add general failed")
@@ -231,10 +248,16 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild_id = guild_id_from_interaction(interaction)
+            channel_id = channel_id_from_interaction(interaction)
             week_start = self._default_week(week)
             numeric = parse_numeric_value(value)
             await self.bot.db.upsert_metric(
-                guild_id, week_start, player, metric_type, numeric
+                guild_id,
+                week_start,
+                player,
+                metric_type,
+                numeric,
+                channel_id=channel_id,
             )
         except Exception as exc:
             log.exception("add %s failed", metric_type)
@@ -320,6 +343,7 @@ class Ingest(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value if dataset else "auto"
         week_start = self._default_week(week)
 
@@ -338,7 +362,7 @@ class Ingest(commands.Cog):
         )
 
         summary = await self._process_attachments(
-            images, kind, week_start, guild_id
+            images, kind, week_start, guild_id, channel_id
         )
         await self._send_long_followup(interaction, summary, ephemeral=True)
 
@@ -360,11 +384,13 @@ class Ingest(commands.Cog):
         timeout_minutes: app_commands.Range[int, 1, 15] = 10,
     ) -> None:
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
         week_start = self._default_week(week, context="ingest_batch")
         log.info(
-            "Batch OCR starting guild=%s kind=%s week_start=%s timeout_min=%s",
+            "Batch OCR starting guild=%s channel=%s kind=%s week_start=%s timeout_min=%s",
             guild_id,
+            channel_id,
             kind,
             week_start,
             timeout_minutes,
@@ -447,7 +473,7 @@ class Ingest(commands.Cog):
             f"Processing **{len(collected)}** queued image(s)…"
         )
         summary = await self._process_attachments(
-            collected, kind, week_start, guild_id
+            collected, kind, week_start, guild_id, channel_id
         )
         short = summary.split("\n\n", 1)[0]
         try:
@@ -478,10 +504,11 @@ class Ingest(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         week_start = self._default_week(week)
         try:
             count = await self._ingest_pasted(
-                guild_id, dataset.value, data, week_start
+                guild_id, channel_id, dataset.value, data, week_start
             )
         except Exception as exc:
             log.exception("Text ingest failed")
@@ -495,6 +522,7 @@ class Ingest(commands.Cog):
     async def _ingest_pasted(
         self,
         guild_id: str,
+        channel_id: str,
         dataset: str,
         data: str,
         week_start: str,
@@ -523,7 +551,9 @@ class Ingest(commands.Cog):
                 name = " ".join(row[:-1])
                 payload.append((week_start, name, metric, parse_numeric_value(value)))
 
-        return await self.bot.db.upsert_metrics(guild_id, payload)
+        return await self.bot.db.upsert_metrics(
+            guild_id, payload, channel_id=channel_id
+        )
 
     async def _process_attachments(
         self,
@@ -531,6 +561,7 @@ class Ingest(commands.Cog):
         kind: str,
         week_start: str,
         guild_id: str,
+        channel_id: str,
     ) -> str:
         if not images:
             return "No images to process."
@@ -546,12 +577,14 @@ class Ingest(commands.Cog):
             engine_label = f"vision/{engine.vision_model}"
 
         log.info(
-            "OCR batch start: %d image(s) engine=%s kind=%s week=%s guild=%s files=%s",
+            "OCR batch start: %d image(s) engine=%s kind=%s week=%s "
+            "guild=%s channel=%s files=%s",
             len(images),
             engine_label,
             kind,
             week_start,
             guild_id,
+            channel_id,
             [img.filename for img in images],
         )
 
@@ -568,7 +601,7 @@ class Ingest(commands.Cog):
         for index, image in enumerate(images, start=1):
             try:
                 detail, count, names = await self._process_attachment(
-                    image, kind, week_start, guild_id
+                    image, kind, week_start, guild_id, channel_id
                 )
                 total_rows += count
                 players.update(names)
@@ -645,6 +678,7 @@ class Ingest(commands.Cog):
         kind: str,
         week_start: str,
         guild_id: str,
+        channel_id: str,
     ) -> tuple[str, int, set[str]]:
         suffix = Path(attachment.filename).suffix or ".png"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -677,7 +711,9 @@ class Ingest(commands.Cog):
                 (week_start, m.player_name, m.metric_type, m.value)
                 for m in result.metrics
             ]
-            count = await self.bot.db.upsert_metrics(guild_id, payload)
+            count = await self.bot.db.upsert_metrics(
+                guild_id, payload, channel_id=channel_id
+            )
             names = {m.player_name for m in result.metrics}
 
             lines = [
@@ -695,11 +731,12 @@ class Ingest(commands.Cog):
             for w in result.warnings:
                 lines.append(f"⚠️ {w}")
             log.info(
-                "OCR saved %d rows kind=%s week=%s guild=%s file=%s",
+                "OCR saved %d rows kind=%s week=%s guild=%s channel=%s file=%s",
                 count,
                 result.kind,
                 week_start,
                 guild_id,
+                channel_id,
                 attachment.filename,
             )
             return "\n".join(lines), count, names
@@ -727,6 +764,7 @@ class Ingest(commands.Cog):
             return
 
         guild_id = str(message.guild.id)
+        msg_channel_id = channel_id_from_message(message)
         hint = (message.content or "").strip().split()
         kind = "auto"
         week = None
@@ -756,7 +794,7 @@ class Ingest(commands.Cog):
             + f"_For up to {MAX_INGEST_IMAGES} across several messages, use `/ingest batch`._"
         )
         summary = await self._process_attachments(
-            images, kind, week_start, guild_id
+            images, kind, week_start, guild_id, msg_channel_id
         )
         if len(summary) > 1900:
             summary = summary[:1900] + "\n…"
@@ -785,12 +823,13 @@ class Ingest(commands.Cog):
             await ctx.reply("Dataset must be versus, tech, general, power, or auto.")
             return
         guild_id = guild_id_from_context(ctx)
+        channel_id = channel_id_from_context(ctx)
         week_start = self._default_week(week)
         status = await ctx.reply(
             f"Processing **{len(images)}** image(s) (`{kind}` → `{week_start}`)…"
         )
         summary = await self._process_attachments(
-            images, kind, week_start, guild_id
+            images, kind, week_start, guild_id, channel_id
         )
         if len(summary) > 1900:
             summary = summary[:1900] + "\n…"
@@ -801,10 +840,16 @@ class Ingest(commands.Cog):
         self, ctx: commands.Context, player: str, value: str, week: str | None = None
     ) -> None:
         guild_id = guild_id_from_context(ctx)
+        channel_id = channel_id_from_context(ctx)
         week_start = self._default_week(week)
         numeric = parse_numeric_value(value)
         await self.bot.db.upsert_metric(
-            guild_id, week_start, player, "VersusPoints", numeric
+            guild_id,
+            week_start,
+            player,
+            "VersusPoints",
+            numeric,
+            channel_id=channel_id,
         )
         await ctx.reply(
             f"Saved **{player}** VersusPoints={format_value('VersusPoints', numeric)} `{week_start}`"
@@ -815,10 +860,16 @@ class Ingest(commands.Cog):
         self, ctx: commands.Context, player: str, value: str, week: str | None = None
     ) -> None:
         guild_id = guild_id_from_context(ctx)
+        channel_id = channel_id_from_context(ctx)
         week_start = self._default_week(week)
         numeric = parse_numeric_value(value)
         await self.bot.db.upsert_metric(
-            guild_id, week_start, player, "TechContribution", numeric
+            guild_id,
+            week_start,
+            player,
+            "TechContribution",
+            numeric,
+            channel_id=channel_id,
         )
         await ctx.reply(
             f"Saved **{player}** TechContribution={format_value('TechContribution', numeric)} `{week_start}`"
@@ -834,14 +885,25 @@ class Ingest(commands.Cog):
         week: str | None = None,
     ) -> None:
         guild_id = guild_id_from_context(ctx)
+        channel_id = channel_id_from_context(ctx)
         week_start = self._default_week(week)
         hq_val = parse_numeric_value(hq)
         power_val = parse_numeric_value(power)
         await self.bot.db.upsert_metric(
-            guild_id, week_start, player, "HQLevel", hq_val
+            guild_id,
+            week_start,
+            player,
+            "HQLevel",
+            hq_val,
+            channel_id=channel_id,
         )
         await self.bot.db.upsert_metric(
-            guild_id, week_start, player, "Power", power_val
+            guild_id,
+            week_start,
+            player,
+            "Power",
+            power_val,
+            channel_id=channel_id,
         )
         await ctx.reply(
             f"Saved **{player}** HQ={hq_val:.0f} Power={format_value('Power', power_val)} `{week_start}`"

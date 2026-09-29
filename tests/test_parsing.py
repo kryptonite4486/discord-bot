@@ -86,15 +86,32 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "test.db")
             await db.connect()
-            await db.upsert_metric(guild_a, "2026-09-28", "PrincessPea", "HQLevel", 24)
             await db.upsert_metric(
-                guild_a, "2026-09-28", "PrincessPea", "Power", 65_400_000
+                guild_a, "2026-09-28", "PrincessPea", "HQLevel", 24, channel_id="c1"
             )
             await db.upsert_metric(
-                guild_a, "2026-09-28", "EnemyHelicopter", "VersusPoints", 112_257_938
+                guild_a,
+                "2026-09-28",
+                "PrincessPea",
+                "Power",
+                65_400_000,
+                channel_id="c1",
             )
             await db.upsert_metric(
-                guild_b, "2026-09-28", "OtherServerPlayer", "VersusPoints", 99.0
+                guild_a,
+                "2026-09-28",
+                "EnemyHelicopter",
+                "VersusPoints",
+                112_257_938,
+                channel_id="c1",
+            )
+            await db.upsert_metric(
+                guild_b,
+                "2026-09-28",
+                "OtherServerPlayer",
+                "VersusPoints",
+                99.0,
+                channel_id="c2",
             )
 
             week = await db.get_week_metrics(guild_a, "2026-09-28")
@@ -113,6 +130,83 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             stats = await db.stats(guild_a)
             self.assertEqual(stats["rows"], 3)
             self.assertEqual(stats["guild_id"], guild_a)
+            self.assertEqual(stats["unassigned_rows"], 0)
+            await db.close()
+
+    async def test_channel_phase1_includes_unassigned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "ch.db")
+            await db.connect()
+            # Historical unassigned row
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Alice", "Power", 1000, channel_id=""
+            )
+            # New ingest into channel A
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Bob", "Power", 2000, channel_id="ch-a"
+            )
+            # Other channel should not appear when scoped to ch-a (but unassigned does)
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Carol", "Power", 3000, channel_id="ch-b"
+            )
+
+            phase1 = await db.get_week_metrics(
+                "g1", "2026-09-28", channel_id="ch-a", include_unassigned=True
+            )
+            names = {r["PlayerName"] for r in phase1}
+            self.assertEqual(names, {"Alice", "Bob"})
+
+            strict = await db.get_week_metrics(
+                "g1", "2026-09-28", channel_id="ch-a", include_unassigned=False
+            )
+            self.assertEqual([r["PlayerName"] for r in strict], ["Bob"])
+
+            updated = await db.assign_channel("g1", "ch-a")
+            self.assertEqual(updated, 1)
+            self.assertEqual(await db.count_unassigned("g1"), 0)
+
+            after = await db.get_week_metrics(
+                "g1", "2026-09-28", channel_id="ch-a", include_unassigned=True
+            )
+            self.assertEqual({r["PlayerName"] for r in after}, {"Alice", "Bob"})
+            # Idempotent
+            self.assertEqual(await db.assign_channel("g1", "ch-a"), 0)
+            await db.close()
+
+    async def test_migrate_add_channel_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guild_only.db"
+            import aiosqlite
+
+            async with aiosqlite.connect(path) as raw:
+                await raw.executescript(
+                    """
+                    CREATE TABLE WeeklyMetrics (
+                        GuildId     TEXT    NOT NULL,
+                        WeekStart   TEXT    NOT NULL,
+                        PlayerName  TEXT    NOT NULL,
+                        MetricType  TEXT    NOT NULL,
+                        Value       REAL    NOT NULL,
+                        UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                        PRIMARY KEY (GuildId, WeekStart, PlayerName, MetricType)
+                    );
+                    """
+                )
+                await raw.execute(
+                    """
+                    INSERT INTO WeeklyMetrics
+                        (GuildId, WeekStart, PlayerName, MetricType, Value)
+                    VALUES ('g1', '2026-09-28', 'Dana', 'HQLevel', 22)
+                    """
+                )
+                await raw.commit()
+
+            db = Database(path)
+            await db.connect()
+            rows = await db.get_week_metrics("g1", "2026-09-28")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["ChannelId"], "")
+            self.assertEqual(await db.count_unassigned("g1"), 1)
             await db.close()
 
     async def test_migrate_with_legacy_guild_id(self) -> None:

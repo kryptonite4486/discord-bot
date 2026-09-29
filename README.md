@@ -119,18 +119,33 @@ Example: `general current` + attach member-list screenshots.
 
 ## Data model
 
-Metrics are scoped by Discord server. Two servers using the same bot never share rows.
+Metrics are scoped by Discord **server** (`GuildId`). Phase 1 also stores an optional
+**channel** tag (`ChannelId`) so multiple datasets can coexist in one guild later.
 
 ```sql
 WeeklyMetrics (
   GuildId    TEXT,   -- Discord guild snowflake (string)
+  ChannelId  TEXT,   -- Discord channel snowflake; '' = unassigned (pre-backfill)
   WeekStart  TEXT,   -- Sunday YYYY-MM-DD
   PlayerName TEXT,   -- identity key
   MetricType TEXT,   -- VersusPoints | TechContribution | HQLevel | Power
   Value      REAL,
-  PRIMARY KEY (GuildId, WeekStart, PlayerName, MetricType)
+  PRIMARY KEY (GuildId, ChannelId, WeekStart, PlayerName, MetricType)
 )
 ```
+
+New ingest writes the current channel’s ID. During Phase 1, channel reports also include
+rows with empty `ChannelId` so historical data stays visible until backfill.
+
+### Channel backfill (Phase 1)
+
+After deploying Phase 1, in each server that already has data:
+
+1. Enable Discord Developer Mode → right-click the primary metrics channel → **Copy Channel ID**.
+2. Run `/admin assign-channel` in that server (defaults to the current channel, or pass `channel`).
+3. Confirm `/admin stats` shows **Unassigned channel rows = 0**.
+
+Phase 2 (separate deploy) will enforce strict channel isolation and remove `assign-channel`.
 
 ### Migrating an existing database
 
@@ -138,6 +153,8 @@ On startup, if `WeeklyMetrics` exists without `GuildId`, the bot rebuilds the ta
 
 1. Set `LEGACY_GUILD_ID` to your Discord server’s snowflake ID (Developer Mode → right-click server → Copy Server ID) **before** the first upgraded start.
 2. If `LEGACY_GUILD_ID` is unset, rows are tagged `GuildId=legacy` and a warning is logged (you can still query them only under that literal id).
+
+If the table has `GuildId` but no `ChannelId`, startup adds `ChannelId` default `''` (unassigned) for all existing rows.
 
 Fresh databases skip migration and create the new schema directly.
 

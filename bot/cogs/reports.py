@@ -12,7 +12,12 @@ from discord.ext import commands
 
 from bot.config import resolve_metric
 from bot.reporting import charts, formatters
-from bot.utils.guild import guild_id_from_context, guild_id_from_interaction
+from bot.utils.guild import (
+    channel_id_from_context,
+    channel_id_from_interaction,
+    guild_id_from_context,
+    guild_id_from_interaction,
+)
 from bot.utils.parsing import chunk_fenced_md, parse_week_start
 
 log = logging.getLogger(__name__)
@@ -62,8 +67,12 @@ class Reports(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         week_start = parse_week_start(week)
-        rows = await self.bot.db.get_week_metrics(guild_id, week_start)
+        # Phase 1: include unassigned ('') rows so pre-backfill data stays visible.
+        rows = await self.bot.db.get_week_metrics(
+            guild_id, week_start, channel_id=channel_id, include_unassigned=True
+        )
         text = formatters.week_summary_text(week_start, rows)
         await self._send_text(interaction, text)
 
@@ -77,7 +86,10 @@ class Reports(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         guild_id = guild_id_from_interaction(interaction)
-        rows = await self.bot.db.get_player_metrics(guild_id, name)
+        channel_id = channel_id_from_interaction(interaction)
+        rows = await self.bot.db.get_player_metrics(
+            guild_id, name, channel_id=channel_id, include_unassigned=True
+        )
         text = formatters.player_report_text(name, rows)
         png = charts.player_trend_chart(name, rows) if chart and rows else None
         file = discord.File(png, filename=f"{name}_trend.png") if png else None
@@ -112,8 +124,15 @@ class Reports(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         metric_type = resolve_metric(metric.value)
-        rows = await self.bot.db.get_trends(guild_id, metric_type, weeks=weeks)
+        rows = await self.bot.db.get_trends(
+            guild_id,
+            metric_type,
+            weeks=weeks,
+            channel_id=channel_id,
+            include_unassigned=True,
+        )
         text = formatters.trend_summary_text(metric_type, rows)
         png = charts.metric_trend_chart(metric_type, rows)
         file = discord.File(png, filename=f"{metric_type}_trend.png") if png else None
@@ -130,11 +149,16 @@ class Reports(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         metric_type = resolve_metric(metric.value)
 
         try:
             rows = await self.bot.db.get_growth_rates(
-                guild_id, metric_type, weeks=weeks
+                guild_id,
+                metric_type,
+                weeks=weeks,
+                channel_id=channel_id,
+                include_unassigned=True,
             )
             text = formatters.growth_report_text(metric_type, weeks, rows)
 
@@ -200,9 +224,15 @@ class Reports(commands.Cog):
         if not interaction.response.is_done():
             await interaction.response.defer()
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
         week_start = parse_week_start(week) if week else None
         rows = await self.bot.db.get_leaderboard(
-            guild_id, metric_type, week_start=week_start, limit=limit
+            guild_id,
+            metric_type,
+            week_start=week_start,
+            limit=limit,
+            channel_id=channel_id,
+            include_unassigned=True,
         )
         resolved_week = rows[0]["WeekStart"] if rows else (week_start or "n/a")
         text = formatters.leaderboard_text(metric_type, str(resolved_week), rows)
@@ -219,14 +249,20 @@ class Reports(commands.Cog):
     @commands.command(name="reportweek")
     async def report_week_prefix(self, ctx: commands.Context, week: str | None = None) -> None:
         guild_id = guild_id_from_context(ctx)
+        channel_id = channel_id_from_context(ctx)
         week_start = parse_week_start(week)
-        rows = await self.bot.db.get_week_metrics(guild_id, week_start)
+        rows = await self.bot.db.get_week_metrics(
+            guild_id, week_start, channel_id=channel_id, include_unassigned=True
+        )
         await ctx.reply(formatters.week_summary_text(week_start, rows)[:1900])
 
     @commands.command(name="reportplayer")
     async def report_player_prefix(self, ctx: commands.Context, *, name: str) -> None:
         guild_id = guild_id_from_context(ctx)
-        rows = await self.bot.db.get_player_metrics(guild_id, name)
+        channel_id = channel_id_from_context(ctx)
+        rows = await self.bot.db.get_player_metrics(
+            guild_id, name, channel_id=channel_id, include_unassigned=True
+        )
         text = formatters.player_report_text(name, rows)
         png = charts.player_trend_chart(name, rows)
         if png:

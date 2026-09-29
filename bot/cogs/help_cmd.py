@@ -12,12 +12,16 @@ HELP_TEXT = """\
 **Weekly Metrics Bot — Commands**
 
 Data is stored **per Discord server**. Commands only work in a server (DMs unsupported).
+New ingest tags the **current channel**. Reports in Phase 1 also include unassigned
+(pre-backfill) rows for this server. After deploy, an admin should run
+`/admin assign-channel` once per server.
 
 ```
 Admin
-  /admin reload     Reload a cog module
-  /admin sync       Sync slash commands
-  /admin stats      Datastore statistics (this server)
+  /admin reload          Reload a cog module
+  /admin sync            Sync slash commands
+  /admin stats           Datastore statistics (this server)
+  /admin assign-channel  Backfill unassigned rows → a channel (Phase 1)
 
 Add / Ingest
   /add versus       Add Versus Points for a player
