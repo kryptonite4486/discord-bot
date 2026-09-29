@@ -1,0 +1,16 @@
+services:
+  discord-bot:
+    build: .
+    container_name: weekly-metrics-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - easyocr-cache:/app/.EasyOCR
+    environment:
+      - DATABASE_PATH=/app/data/weekly.db
+      - EASYOCR_MODULE_PATH=/app/.EasyOCR
+
+volumes:
+  easyocr-cache:

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+*.pem
+
+# Data & runtime
+data/*.db
+data/*.db-*
+!data/.gitkeep
+tmp/
+bot/**/__pycache__/
+tests/**/__pycache__/
+*.png
+!samples/**
+!assets/**
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# OCR / ML caches
+.EasyOCR/
+*.traineddata
+.venv/
