@@ -10,7 +10,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.utils.guild import guild_id_from_context, guild_id_from_interaction
+from bot.utils.guild import (
+    channel_id_from_context,
+    channel_id_from_interaction,
+    guild_id_from_context,
+    guild_id_from_interaction,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +64,6 @@ class Admin(commands.Cog):
 
     @admin.command(name="reload", description="Reload a cog module")
     @app_commands.describe(cog="Cog module name, e.g. ingest or reports")
-    @app_commands.checks.has_permissions(administrator=True)
     async def reload(self, interaction: discord.Interaction, cog: str) -> None:
         await interaction.response.defer(ephemeral=True)
         module = cog if cog.startswith("bot.cogs.") else f"bot.cogs.{cog}"
@@ -96,7 +100,6 @@ class Admin(commands.Cog):
             app_commands.Choice(name="Global (can take up to 1 hour)", value="global"),
         ]
     )
-    @app_commands.checks.has_permissions(administrator=True)
     async def sync(
         self,
         interaction: discord.Interaction,
@@ -131,10 +134,16 @@ class Admin(commands.Cog):
         await interaction.followup.send(msg, ephemeral=True)
 
     @admin.command(name="stats", description="Show datastore statistics for this server")
-    @app_commands.checks.has_permissions(administrator=True)
     async def stats(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
+        channel = interaction.channel
+        channel_label = (
+            f"{channel.mention} (`{channel_id}`)"
+            if isinstance(channel, discord.abc.GuildChannel)
+            else f"`{channel_id}`"
+        )
         stats = await self.bot.db.stats(guild_id)
         by_metric = "\n".join(
             f"• {k}: {v}" for k, v in sorted(stats["by_metric"].items())
@@ -143,7 +152,8 @@ class Admin(commands.Cog):
             title="Datastore Stats (this server)",
             color=discord.Color.blurple(),
         )
-        embed.add_field(name="Guild", value=guild_id, inline=False)
+        embed.add_field(name="Guild", value=f"`{guild_id}`", inline=False)
+        embed.add_field(name="Channel", value=channel_label, inline=False)
         embed.add_field(name="Rows", value=str(stats["rows"]))
         embed.add_field(name="Players", value=str(stats["players"]))
         embed.add_field(name="Weeks", value=str(stats["weeks"]))
@@ -164,23 +174,17 @@ class Admin(commands.Cog):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-        msg = "You need administrator permission for this command."
-        if isinstance(error, app_commands.errors.MissingPermissions):
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+        log.exception("Admin command error: %s", error)
+        text = f"Error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
         else:
-            log.exception("Admin command error: %s", error)
-            text = f"Error: `{error}`"
-            if interaction.response.is_done():
-                await interaction.followup.send(text, ephemeral=True)
-            else:
-                await interaction.response.send_message(text, ephemeral=True)
+            await interaction.response.send_message(text, ephemeral=True)
 
     # Prefix fallbacks
+    # NOTE: Administrator checks temporarily removed so any server member can
+    # run sync/reload/stats. Re-add before wider rollout.
     @commands.command(name="reload")
-    @commands.has_permissions(administrator=True)
     async def reload_prefix(self, ctx: commands.Context, cog: str) -> None:
         module = cog if cog.startswith("bot.cogs.") else f"bot.cogs.{cog}"
         deps = _reload_dependencies(module)
@@ -192,7 +196,6 @@ class Admin(commands.Cog):
         await ctx.reply(f"Reloaded `{module}`{extra}.")
 
     @commands.command(name="sync")
-    @commands.has_permissions(administrator=True)
     async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
         """Sync slash commands. Usage: !sync [guild|all|global] — run !sync in a new server to register commands instantly."""
         assert ctx.guild is not None
@@ -217,12 +220,13 @@ class Admin(commands.Cog):
             f"Synced **{len(synced)}** commands to **{ctx.guild.name}** (instant)."
         )
     @commands.command(name="dbstats")
-    @commands.has_permissions(administrator=True)
     async def stats_prefix(self, ctx: commands.Context) -> None:
         guild_id = guild_id_from_context(ctx)
+        channel_id = channel_id_from_context(ctx)
         stats = await self.bot.db.stats(guild_id)
         await ctx.reply(
-            f"Guild={guild_id} Rows={stats['rows']} Players={stats['players']} "
+            f"Guild={guild_id} Channel={channel_id} "
+            f"Rows={stats['rows']} Players={stats['players']} "
             f"Weeks={stats['weeks']} Unassigned={stats['unassigned_rows']} "
             f"Metrics={stats['by_metric']}"
         )

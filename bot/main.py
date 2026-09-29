@@ -44,6 +44,7 @@ class WeeklyMetricsBot(commands.Bot):
             settings.database_path,
             legacy_guild_id=settings.legacy_guild_id,
         )
+        self._guild_commands_synced = False
         if not settings.message_content_intent:
             log.warning(
                 "MESSAGE_CONTENT_INTENT=false — prefix commands and OCR channel "
@@ -79,14 +80,18 @@ class WeeklyMetricsBot(commands.Bot):
             await self.load_extension(ext)
             log.info("Loaded extension %s", ext)
 
+        # Prefer guild sync (instant). Global-only sync on every restart leaves
+        # Discord clients on stale guild command schemas → "This command is outdated".
         if self.settings.dev_guild_id:
             guild = discord.Object(id=self.settings.dev_guild_id)
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
             log.info("Synced %d commands to dev guild %s", len(synced), guild.id)
+            self._guild_commands_synced = True
         else:
-            synced = await self.tree.sync()
-            log.info("Synced %d global application commands", len(synced))
+            log.info(
+                "Deferring slash sync until on_ready (guild-scoped for all servers)"
+            )
 
     async def on_ready(self) -> None:
         user = self.user
@@ -97,6 +102,21 @@ class WeeklyMetricsBot(commands.Bot):
             __version__,
             len(self.guilds),
         )
+        if not self._guild_commands_synced:
+            # Guild sync is immediate; avoids "command is outdated" after redeploys.
+            for g in list(self.guilds):
+                try:
+                    self.tree.copy_global_to(guild=g)
+                    synced = await self.tree.sync(guild=g)
+                    log.info(
+                        "Synced %d commands to guild %s (%s)",
+                        len(synced),
+                        g.name,
+                        g.id,
+                    )
+                except Exception:
+                    log.exception("Failed to sync commands for guild %s", g.id)
+            self._guild_commands_synced = True
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
