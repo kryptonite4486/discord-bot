@@ -110,6 +110,22 @@ class WeeklyMetricsBot(commands.Bot):
         log.exception("Command error in %s: %s", ctx.command, error)
         await ctx.reply(f"Error: `{error}`")
 
+    async def on_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: discord.app_commands.AppCommandError,
+    ) -> None:
+        """Ensure deferred slash commands always get a visible failure reply."""
+        log.exception("App command error in %s: %s", interaction.command, error)
+        text = f"Command failed: `{error}`"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(text, ephemeral=True)
+            else:
+                await interaction.response.send_message(text, ephemeral=True)
+        except Exception:
+            log.exception("Failed to send app command error followup")
+
     async def close(self) -> None:
         await self.db.close()
         await super().close()
@@ -130,6 +146,8 @@ async def amain() -> None:
         log.info("OCR engine=%s", settings.ocr_engine)
 
     bot = WeeklyMetricsBot(settings)
+    # Prefer Bot.on_app_command_error when present; also bind tree for compatibility.
+    bot.tree.on_error = bot.on_app_command_error
     async with bot:
         await bot.start(settings.discord_token)
 

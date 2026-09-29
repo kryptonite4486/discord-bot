@@ -33,7 +33,7 @@ Reports
   /report versus    Versus Points leaderboard (all)
   /report tech      Tech Contribution leaderboard (all)
   /report trend     Multi-week metric trends
-  /report growth    Growth rates for a metric
+  /report growth    Top/bottom 15 growth + full .md file
   /report leaderboard  Ranked list (all; optional limit) + chart
 
 Help

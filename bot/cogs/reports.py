@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 
 import discord
@@ -11,7 +13,7 @@ from discord.ext import commands
 from bot.config import resolve_metric
 from bot.reporting import charts, formatters
 from bot.utils.guild import guild_id_from_context, guild_id_from_interaction
-from bot.utils.parsing import chunk_message, parse_week_start
+from bot.utils.parsing import chunk_fenced_md, parse_week_start
 
 log = logging.getLogger(__name__)
 
@@ -37,19 +39,19 @@ class Reports(commands.Cog):
         text: str,
         *,
         file: discord.File | None = None,
+        files: list[discord.File] | None = None,
     ) -> None:
         # Discord does not render markdown tables; use a code block for alignment.
-        wrapped = f"```md\n{text}\n```"
-        chunks = list(chunk_message(wrapped, limit=1900))
-        first = True
+        # Each chunk is a complete ```md … ``` fence so mid-report splits stay valid.
+        chunks = chunk_fenced_md(text, limit=1900)
         for chunk in chunks:
-            payload = chunk if len(chunk) < 2000 else chunk[:1990] + "\n…"
-            if first and file is not None:
-                await interaction.followup.send(content=payload, file=file)
-            else:
-                await interaction.followup.send(content=payload)
-            first = False
-            file = None
+            payload = chunk if len(chunk) <= 2000 else chunk[:1990] + "\n```"
+            await interaction.followup.send(content=payload)
+        # Optional downloads (e.g. full growth .md), then chart last if provided.
+        for extra in files or []:
+            await interaction.followup.send(file=extra)
+        if file is not None:
+            await interaction.followup.send(file=file)
 
     @report.command(name="week", description="Weekly summary for all metrics")
     @app_commands.describe(week="Week start YYYY-MM-DD / current / last")
@@ -129,11 +131,47 @@ class Reports(commands.Cog):
         await interaction.response.defer()
         guild_id = guild_id_from_interaction(interaction)
         metric_type = resolve_metric(metric.value)
-        rows = await self.bot.db.get_growth_rates(guild_id, metric_type, weeks=weeks)
-        text = formatters.growth_report_text(metric_type, weeks, rows)
-        png = charts.growth_bar_chart(metric_type, rows)
-        file = discord.File(png, filename=f"{metric_type}_growth.png") if png else None
-        await self._send_text(interaction, text, file=file)
+
+        try:
+            rows = await self.bot.db.get_growth_rates(
+                guild_id, metric_type, weeks=weeks
+            )
+            text = formatters.growth_report_text(metric_type, weeks, rows)
+
+            attachments: list[discord.File] = []
+            if rows:
+                full_md = formatters.growth_report_full_markdown(
+                    metric_type, weeks, rows
+                )
+                attachments.append(
+                    discord.File(
+                        io.BytesIO(full_md.encode("utf-8")),
+                        filename=f"{metric_type}_growth_full.md",
+                    )
+                )
+
+            # Matplotlib can block the event loop on first use / large fonts.
+            png = await asyncio.to_thread(
+                charts.growth_bar_chart, metric_type, rows
+            )
+            chart = (
+                discord.File(png, filename=f"{metric_type}_growth.png")
+                if png
+                else None
+            )
+            await self._send_text(
+                interaction, text, file=chart, files=attachments
+            )
+        except AttributeError as exc:
+            log.exception("Growth report missing helper — reload formatters")
+            await interaction.followup.send(
+                "Growth report helpers are out of date. Run "
+                "`/admin reload reports` (or restart the bot) and try again.\n"
+                f"Details: `{exc}`"
+            )
+        except Exception as exc:
+            log.exception("Growth report failed")
+            await interaction.followup.send(f"Growth report failed: `{exc}`")
 
     @report.command(name="leaderboard", description="Leaderboard for any metric")
     @app_commands.describe(

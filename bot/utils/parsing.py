@@ -94,15 +94,23 @@ def parse_numeric_value(raw: str | int | float) -> float:
 
 
 def format_value(metric_type: str, value: float) -> str:
-    """Human-friendly formatting for display."""
+    """Human-friendly formatting for display (signed K/M/B where applicable)."""
     if metric_type == "HQLevel":
         return str(int(round(value)))
-    if metric_type == "Power":
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.1f}K"
-        return f"{value:,.0f}"
+
+    # Use magnitude for thresholds so negative deltas stay abbreviated (-2.3M),
+    # matching positive shorthand (2.3M) in growth/leaderboard reports.
+    if metric_type in {"Power", "VersusPoints", "TechContribution"}:
+        sign = "-" if value < 0 else ""
+        mag = abs(float(value))
+        if mag >= 1_000_000_000:
+            return f"{sign}{mag / 1_000_000_000:.1f}B"
+        if mag >= 1_000_000:
+            return f"{sign}{mag / 1_000_000:.1f}M"
+        if mag >= 1_000:
+            return f"{sign}{mag / 1_000:.1f}K"
+        return f"{sign}{mag:,.0f}"
+
     return f"{value:,.0f}"
 
 
@@ -165,7 +173,32 @@ def chunk_message(content: str, limit: int = 1900) -> Iterable[str]:
             yield "".join(buf)
             buf = []
             size = 0
+        # Hard-split oversized single lines so we never exceed the limit
+        while len(line) > limit:
+            if buf:
+                yield "".join(buf)
+                buf = []
+                size = 0
+            yield line[:limit]
+            line = line[limit:]
         buf.append(line)
         size += len(line)
     if buf:
         yield "".join(buf)
+
+
+def chunk_fenced_md(content: str, limit: int = 1900, *, lang: str = "md") -> list[str]:
+    """
+    Split content into Discord messages, each a complete fenced code block.
+
+    Inner backticks in the content are fine because each message opens and
+    closes its own fence. Fence overhead is reserved in the chunk size.
+    """
+    open_fence = f"```{lang}\n"
+    close_fence = "\n```"
+    overhead = len(open_fence) + len(close_fence)
+    inner_limit = max(200, limit - overhead)
+    return [
+        f"{open_fence}{chunk.rstrip()}{close_fence}"
+        for chunk in chunk_message(content, limit=inner_limit)
+    ]

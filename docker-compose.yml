@@ -7,6 +7,9 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      # Live-mount app code so host edits apply without a full image rebuild.
+      # /admin reload picks up cog changes; restart for main/config changes.
+      - ./bot:/app/bot
       - easyocr-cache:/app/.EasyOCR
     environment:
       - DATABASE_PATH=/app/data/weekly.db

@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.utils.parsing import (  # noqa: E402
+    chunk_fenced_md,
     format_value,
     parse_numeric_value,
     parse_pasted_rows,
@@ -70,6 +71,12 @@ class FormatTests(unittest.TestCase):
     def test_power_format(self) -> None:
         self.assertEqual(format_value("Power", 65_400_000), "65.4M")
         self.assertEqual(format_value("HQLevel", 24), "24")
+
+    def test_signed_abbreviations(self) -> None:
+        self.assertEqual(format_value("Power", -2_300_000), "-2.3M")
+        self.assertEqual(format_value("VersusPoints", -12_500), "-12.5K")
+        self.assertEqual(format_value("TechContribution", 1_200_000), "1.2M")
+        self.assertEqual(format_value("Power", -500), "-500")
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -176,6 +183,25 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["PlayerName"], "Bob")
             await db.close()
+
+
+class ChunkFenceTests(unittest.TestCase):
+    def test_each_chunk_is_complete_fence(self) -> None:
+        lines = [f"line {i} with week 2026-09-27" for i in range(80)]
+        text = "## Leaderboard — TechContribution (2026-09-27)\n" + "\n".join(lines)
+        chunks = chunk_fenced_md(text, limit=400)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertTrue(chunk.startswith("```md\n"), chunk[:20])
+            self.assertTrue(chunk.endswith("\n```"), chunk[-10:])
+            self.assertLessEqual(len(chunk), 400)
+
+    def test_single_short_message(self) -> None:
+        chunks = chunk_fenced_md("## Leaderboard — Tech (2026-09-27)\nok", limit=1900)
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("2026-09-27", chunks[0])
+        self.assertTrue(chunks[0].startswith("```md\n"))
+        self.assertTrue(chunks[0].endswith("\n```"))
 
 
 if __name__ == "__main__":
