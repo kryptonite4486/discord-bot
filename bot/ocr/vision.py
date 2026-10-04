@@ -10,7 +10,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from bot.ocr.pipeline import DatasetKind, ExtractedMetric, OCRResult
+from bot.config import LEADERBOARD_DATASETS, MEMBER_CARD_DATASETS
+from bot.ocr.pipeline import (
+    DatasetKind,
+    ExtractedMetric,
+    OCRResult,
+    relabel_member_cards,
+)
 from bot.utils.parsing import parse_numeric_value
 
 log = logging.getLogger(__name__)
@@ -40,23 +46,26 @@ def _image_data_url(path: Path) -> str:
 
 
 def _prompt_for_kind(kind: DatasetKind) -> str:
-    if kind == "general":
+    if kind in MEMBER_CARD_DATASETS:
+        # Ask for the power text verbatim: models converting "8.3M" themselves
+        # tend to drop the decimal (83000000). parse_numeric_value converts.
         return (
             "You are extracting structured data from a mobile game member-list screenshot.\n"
-            "Read every visible player row.\n"
+            "Read every visible player card.\n"
             "Return ONLY a JSON array (no markdown fences, no commentary) of objects with keys:\n"
             '  "player" (string name, strip alliance tags like [TAG] if present),\n'
             '  "hq" (integer HQ level),\n'
-            '  "power" (numeric power; accept forms like 65.4M and convert to a plain number).\n'
-            "Example: [{\"player\":\"Alice\",\"hq\":30,\"power\":65400000}]\n"
+            '  "power" (the power figure copied exactly as displayed, as a string,\n'
+            '           including any decimal point and K/M/B suffix, e.g. "8.3M").\n'
+            'Example: [{"player":"Alice","hq":30,"power":"65.4M"}]\n'
             "If a field is unreadable, omit that object. Do not invent players."
         )
     metric_hint = {
         "versus": "versus / VS points",
         "tech": "tech contribution points",
         "power": "power values",
-        "auto": "leaderboard score values",
-    }.get(kind, "leaderboard score values")
+        "kills": "total kill counts",
+    }[kind]
     return (
         "You are extracting structured data from a mobile game leaderboard screenshot.\n"
         f"Read every visible ranked player row and their {metric_hint}.\n"
@@ -117,12 +126,11 @@ def _rows_to_metrics(
     rows: list[dict[str, Any]],
     *,
     kind: str,
-    metric_type_override: str | None,
 ) -> tuple[list[ExtractedMetric], list[str]]:
     metrics: list[ExtractedMetric] = []
     warnings: list[str] = []
 
-    if kind == "general":
+    if kind in MEMBER_CARD_DATASETS:
         for row in rows:
             player = _player_name(row)
             if not player:
@@ -143,13 +151,9 @@ def _rows_to_metrics(
                     )
                 except ValueError as exc:
                     warnings.append(f"Bad Power for {player}: {exc}")
-        return metrics, warnings
+        return relabel_member_cards(metrics, kind), warnings
 
-    metric_type = metric_type_override or {
-        "tech": "TechContribution",
-        "power": "Power",
-        "versus": "VersusPoints",
-    }.get(kind, "VersusPoints")
+    metric_type = LEADERBOARD_DATASETS[kind]
 
     for row in rows:
         player = _player_name(row)
@@ -238,12 +242,11 @@ def _chat_completions(
 def extract_metrics_via_vision(
     image_path: Path | str,
     *,
-    kind: DatasetKind = "auto",
+    kind: DatasetKind,
     base_url: str,
     model: str,
     api_key: str = "",
     timeout: float = 120.0,
-    metric_type_override: str | None = None,
 ) -> OCRResult:
     """
     Call a local OpenAI-compatible vision model and map rows to ExtractedMetric.
@@ -252,14 +255,13 @@ def extract_metrics_via_vision(
     if not path.is_file():
         raise ValueError(f"Could not read image: {path}")
 
-    detected: str = kind if kind != "auto" else "versus"
-    prompt = _prompt_for_kind(kind if kind != "auto" else "versus")
+    prompt = _prompt_for_kind(kind)
     data_url = _image_data_url(path)
 
     log.info(
         "Vision OCR request model=%s kind=%s url=%s",
         model,
-        detected,
+        kind,
         base_url.rstrip("/") + "/chat/completions",
     )
     raw_text = _chat_completions(
@@ -276,10 +278,10 @@ def extract_metrics_via_vision(
         rows = _parse_json_rows(raw_text)
     except (json.JSONDecodeError, ValueError) as exc:
         warnings.append(f"Failed to parse vision JSON: {exc}")
-        return OCRResult(kind=detected, metrics=[], raw_text=raw_text, warnings=warnings)
+        return OCRResult(kind=kind, metrics=[], raw_text=raw_text, warnings=warnings)
 
     metrics, row_warnings = _rows_to_metrics(
-        rows, kind=detected, metric_type_override=metric_type_override
+        rows, kind=kind
     )
     warnings.extend(row_warnings)
 
@@ -291,8 +293,8 @@ def extract_metrics_via_vision(
     if not metrics:
         warnings.append(
             "No player metrics parsed from vision model. "
-            "Try a tighter crop or set the dataset type explicitly."
+            "Try a tighter crop or check the dataset type."
         )
 
-    log.info("Vision OCR kind=%s rows=%d metrics=%d", detected, len(rows), len(metrics))
-    return OCRResult(kind=detected, metrics=metrics, raw_text=raw_text, warnings=warnings)
+    log.info("Vision OCR kind=%s rows=%d metrics=%d", kind, len(rows), len(metrics))
+    return OCRResult(kind=kind, metrics=metrics, raw_text=raw_text, warnings=warnings)

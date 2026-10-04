@@ -241,7 +241,7 @@ class SampleImageIntegrationTests(unittest.TestCase):
         from bot.ocr.pipeline import extract_metrics_from_image
 
         path = SAMPLES / "power_leaderboard.png"
-        for kind in ("versus", "power", "auto"):
+        for kind in ("versus", "power"):
             with self.subTest(kind=kind):
                 res = extract_metrics_from_image(path, kind=kind, engine=self.engine)
                 self.assertGreaterEqual(len(res.metrics), 5, res.warnings)
@@ -254,6 +254,25 @@ class SampleImageIntegrationTests(unittest.TestCase):
                 values = {m.value for m in res.metrics}
                 self.assertIn(56_705_138.0, values)
                 self.assertIn(33_644_447.0, values)
+
+    def test_kills_leaderboard_webp(self) -> None:
+        from bot.ocr.pipeline import extract_metrics_from_image
+
+        path = SAMPLES / "kills_leaderboard.webp"
+        res = extract_metrics_from_image(path, kind="kills", engine=self.engine)
+        self.assertEqual(len(res.metrics), 8, res.raw_text)
+        self.assertTrue(all(m.metric_type == "Kills" for m in res.metrics))
+        by_name = {m.player_name: m.value for m in res.metrics}
+        self.assertEqual(by_name["EnemyHelicopter"], 1_078_263.0)
+        self.assertEqual(by_name["KBeezCONC"], 1_005_842.0)
+        self.assertEqual(by_name["2Face"], 688_506.0)
+        self.assertEqual(by_name["EscapefromNY"], 585_082.0)
+        self.assertEqual(by_name["Vexx23"], 512_140.0)
+        self.assertEqual(by_name["Louis153"], 443_341.0)
+        # Avatar art text and 0/O swaps can distort names; match by value.
+        values = {m.value for m in res.metrics}
+        self.assertIn(815_445.0, values)
+        self.assertIn(601_931.0, values)
 
     def test_versus_leaderboard_png(self) -> None:
         from bot.ocr.pipeline import extract_metrics_from_image

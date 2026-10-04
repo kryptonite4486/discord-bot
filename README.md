@@ -1,6 +1,6 @@
 # Weekly Metrics Discord Bot
 
-Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Tech Contribution, HQ Level, Power), stores them in SQLite, and generates analytical reports on demand. Designed to run in Docker on a local Mac Studio.
+Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Tech Contribution, HQ Level, Power, Arena Power, Kills), stores them in SQLite, and generates analytical reports on demand. Designed to run in Docker on a local Mac Studio.
 
 ## Features
 
@@ -77,9 +77,11 @@ Slash commands `/ingest image`, `/ingest zip` and `/ingest batch` are unchanged 
 |---------|-------------|
 | `/add versus <player> <value> [week]` | Add versus points |
 | `/add tech <player> <value> [week]` | Add tech contribution |
+| `/add arena <player> <value> [week]` | Add Arena Power |
+| `/add kills <player> <value> [week]` | Add total Kills |
 | `/add general <player> <hq> <power> [week]` | Add HQ + Power |
-| `/ingest image <image…> [dataset] [week]` | OCR up to 10 screenshots on this command |
-| `/ingest zip <archive> [dataset] [week]` | OCR every image inside one `.zip` (up to 50) |
+| `/ingest image <image…> <dataset> [week]` | OCR up to 10 screenshots on this command |
+| `/ingest zip <archive> <dataset> [week]` | OCR every image inside one `.zip` (up to 50) |
 | `/ingest batch <dataset> [week]` | Collect images or `.zip` files across messages (20 images; 50 once a zip is included), then OCR |
 | `/ingest text <dataset> <data> [week]` | Paste CSV/text rows |
 
@@ -100,17 +102,17 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 | `/report growth <metric> [weeks]` | Growth rates |
 | `/report leaderboard <metric>` | Ranked list + chart |
 
-Prefix equivalents use `COMMAND_PREFIX` (default `!`), e.g. `!addversus`, `!reportweek`.
+Prefix equivalents use `COMMAND_PREFIX` (default `!`), e.g. `!addversus`, `!addarena`, `!addkills`, `!reportweek`. `!ingestimage <dataset> [week]` requires the dataset.
 
 ## OCR channel auto-ingest
 
 Set `OCR_CHANNEL_ID` to a Discord channel ID. Images posted there are parsed automatically (up to **10** images per message — Discord’s attachment limit). `.zip` files posted there are unpacked too (up to **50** images). For more across messages, use `/ingest batch`.
 
-Optional message text:
-- `versus` / `tech` / `general` / `power` — force dataset type
+The message text must start with the dataset; uploads without one get a reply asking for it:
+- `versus` / `tech` / `general` / `power` / `arena` / `kills`
 - second token can be a week (`current`, `last`, or `YYYY-MM-DD`)
 
-Example: `general current` + attach member-list screenshots.
+Example: `kills current` + attach kills leaderboard screenshots.
 
 ### Screenshot types
 
@@ -119,6 +121,13 @@ Example: `general current` + attach member-list screenshots.
 | **general** | Member cards / profile (HQ icon + Power `65.4M`) | `HQLevel`, `Power` |
 | **versus** | Ranked list with points | `VersusPoints` |
 | **tech** | Same layout as versus | `TechContribution` |
+| **power** | Ranked list with total power | `Power` |
+| **kills** | Same layout as power; lifetime kill totals | `Kills` |
+| **arena** | Same member cards as general, lower power figure (arena power) | `ArenaPower` (HQ level is ignored) |
+
+There is no auto-detect: every image import names its dataset. Two pairs of screens look identical (general vs arena member cards, and power vs kills leaderboards), so after OCR the bot compares each upload with stored history and flags (🚩) likely mix-ups. It flags Arena Power at half or more of the player's total Power, Power that drops 75%+ week over week, and Kills totals that go down or jump 5x or more. A screenshot is flagged when at least 3 rows (or 30% of comparable rows) trip a check. Data is still saved. If a flag is right, re-upload under the correct dataset; the rows saved under the wrong metric remain until removed from the database by hand (there is no delete command yet).
+
+`ArenaPower` and `Kills` are snapshots like `Power`: each week stores the latest value, and multi-week reports show the change. For Kills, that change is kills gained over the period.
 
 ## Data model
 
@@ -131,7 +140,7 @@ WeeklyMetrics (
   ChannelId  TEXT,   -- Discord channel snowflake (empty only for legacy leftovers)
   WeekStart  TEXT,   -- Sunday YYYY-MM-DD
   PlayerName TEXT,   -- identity key
-  MetricType TEXT,   -- VersusPoints | TechContribution | HQLevel | Power
+  MetricType TEXT,   -- VersusPoints | TechContribution | HQLevel | Power | ArenaPower | Kills
   Value      REAL,
   PRIMARY KEY (GuildId, ChannelId, WeekStart, PlayerName, MetricType)
 )
@@ -162,6 +171,22 @@ On startup, if `WeeklyMetrics` exists without `GuildId`, the bot rebuilds the ta
 If the table has `GuildId` but no `ChannelId`, startup adds `ChannelId` default `''` (unassigned) for all existing rows — backfill those before relying on Phase 2 isolation.
 
 Fresh databases skip migration and create the new schema directly.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests
+```
+
+Unit tests need no network. The EasyOCR sample tests run only when `easyocr` and `cv2` are installed.
+
+The sample screenshots in `samples/` can also be checked against the configured vision model, which is the production OCR path. These tests are opt-in because each image is a real model call:
+
+```bash
+RUN_VISION_TESTS=1 python -m unittest tests.test_vision_samples -v
+```
+
+They read `OCR_VISION_*` from `.env`, swap `host.docker.internal` for `127.0.0.1` when run outside Docker (or set `OCR_VISION_TEST_BASE_URL`), and skip if the server is unreachable.
 
 ## Project layout
 

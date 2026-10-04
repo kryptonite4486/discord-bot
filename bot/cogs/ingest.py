@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.config import resolve_metric
+from bot.config import DATASET_KINDS, resolve_metric
 from bot.ocr import OCREngine, extract_metrics_from_image
 from bot.utils.archive import (
     MAX_ZIP_IMAGES,
@@ -30,6 +30,7 @@ from bot.utils.guild import (
     guild_id_from_context,
     guild_id_from_interaction,
 )
+from bot.utils.plausibility import check_batch
 from bot.utils.parsing import (
     format_value,
     parse_numeric_value,
@@ -52,20 +53,14 @@ MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024
 ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 DATASET_CHOICES = [
-    app_commands.Choice(name="Auto-detect", value="auto"),
     app_commands.Choice(name="Versus", value="versus"),
     app_commands.Choice(name="Tech", value="tech"),
     app_commands.Choice(name="General (HQ+Power)", value="general"),
     app_commands.Choice(name="Power leaderboard", value="power"),
+    app_commands.Choice(name="Arena Power (member cards)", value="arena"),
+    app_commands.Choice(name="Kills leaderboard", value="kills"),
 ]
-
-DATASET_REQUIRED_CHOICES = [
-    app_commands.Choice(name="Versus", value="versus"),
-    app_commands.Choice(name="Tech", value="tech"),
-    app_commands.Choice(name="General (HQ+Power)", value="general"),
-    app_commands.Choice(name="Power leaderboard", value="power"),
-    app_commands.Choice(name="Auto-detect", value="auto"),
-]
+DATASET_USAGE = ", ".join(DATASET_KINDS)
 
 
 def _is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -294,6 +289,36 @@ class Ingest(commands.Cog):
     ) -> None:
         await self._add_single(interaction, "TechContribution", player, value, week)
 
+    @add.command(name="arena", description="Add Arena Power for a player")
+    @app_commands.describe(
+        week="Week start YYYY-MM-DD / current / last",
+        player="Player name",
+        value="Arena Power value",
+    )
+    async def add_arena(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        value: str,
+        week: str | None = None,
+    ) -> None:
+        await self._add_single(interaction, "ArenaPower", player, value, week)
+
+    @add.command(name="kills", description="Add total Kills for a player")
+    @app_commands.describe(
+        week="Week start YYYY-MM-DD / current / last",
+        player="Player name",
+        value="Total kills (lifetime count)",
+    )
+    async def add_kills(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        value: str,
+        week: str | None = None,
+    ) -> None:
+        await self._add_single(interaction, "Kills", player, value, week)
+
     @add.command(name="general", description="Add HQ Level and Power for a player")
     @app_commands.describe(
         week="Week start YYYY-MM-DD / current / last",
@@ -418,7 +443,7 @@ class Ingest(commands.Cog):
         self,
         interaction: discord.Interaction,
         image: discord.Attachment,
-        dataset: app_commands.Choice[str] | None = None,
+        dataset: app_commands.Choice[str],
         week: str | None = None,
         image2: discord.Attachment | None = None,
         image3: discord.Attachment | None = None,
@@ -460,7 +485,7 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
-        kind = dataset.value if dataset else "auto"
+        kind = dataset.value
         week_start = self._default_week(week)
 
         names = ", ".join(f"`{img.filename}`" for img in images)
@@ -497,7 +522,7 @@ class Ingest(commands.Cog):
         self,
         interaction: discord.Interaction,
         archive: discord.Attachment,
-        dataset: app_commands.Choice[str] | None = None,
+        dataset: app_commands.Choice[str],
         week: str | None = None,
     ) -> None:
         if not _is_zip_attachment(archive):
@@ -511,7 +536,7 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
-        kind = dataset.value if dataset else "auto"
+        kind = dataset.value
         week_start = self._default_week(week, context="ingest_zip")
 
         sources, notes = await self._load_sources([archive])
@@ -576,7 +601,7 @@ class Ingest(commands.Cog):
         week="Week start YYYY-MM-DD / current / last",
         timeout_minutes="How long to wait for uploads (1–15)",
     )
-    @app_commands.choices(dataset=DATASET_REQUIRED_CHOICES)
+    @app_commands.choices(dataset=DATASET_CHOICES)
     async def ingest_batch(
         self,
         interaction: discord.Interaction,
@@ -714,13 +739,7 @@ class Ingest(commands.Cog):
         data="Paste rows: player,value  OR  player,hq,power",
         week="Week start YYYY-MM-DD / current / last",
     )
-    @app_commands.choices(
-        dataset=[
-            app_commands.Choice(name="Versus", value="versus"),
-            app_commands.Choice(name="Tech", value="tech"),
-            app_commands.Choice(name="General (HQ+Power)", value="general"),
-        ]
-    )
+    @app_commands.choices(dataset=DATASET_CHOICES)
     async def ingest_text(
         self,
         interaction: discord.Interaction,
@@ -831,12 +850,15 @@ class Ingest(commands.Cog):
             if progress is not None:
                 await progress(index, len(images), image.filename)
             try:
-                detail, count, names = await self._process_attachment(
+                detail, count, names, alerts = await self._process_attachment(
                     image, kind, week_start, guild_id, channel_id
                 )
                 total_rows += count
                 players.update(names)
-                per_file.append(f"• `{image.filename}` — **{count}** row(s)")
+                per_file.append(
+                    f"• `{image.filename}` — **{count}** row(s)"
+                    + "".join(f"\n  🚩 {a}" for a in alerts)
+                )
                 sections.append(
                     f"### {index}/{len(images)} — `{image.filename}`\n{detail}"
                 )
@@ -923,24 +945,17 @@ class Ingest(commands.Cog):
         week_start: str,
         guild_id: str,
         channel_id: str,
-    ) -> tuple[str, int, set[str]]:
+    ) -> tuple[str, int, set[str], list[str]]:
         with tempfile.NamedTemporaryFile(suffix=source.suffix, delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
             await asyncio.to_thread(tmp_path.write_bytes, source.data)
-            metric_override = {
-                "tech": "TechContribution",
-                "versus": "VersusPoints",
-                "power": "Power",
-            }.get(kind)
-
             result = await asyncio.to_thread(
                 extract_metrics_from_image,
                 tmp_path,
                 kind=kind,  # type: ignore[arg-type]
                 engine=self._engine(),
-                metric_type_override=metric_override,
             )
 
             engine = self._engine()
@@ -954,6 +969,25 @@ class Ingest(commands.Cog):
                 (week_start, m.player_name, m.metric_type, m.value)
                 for m in result.metrics
             ]
+            # Check against stored history before saving, so this upload's own
+            # rows don't become the reference.
+            by_metric: dict[str, dict[str, float]] = {}
+            for m in result.metrics:
+                by_metric.setdefault(m.metric_type, {})[m.player_name] = m.value
+            alerts = [
+                alert
+                for metric_type, values in by_metric.items()
+                if (
+                    alert := await check_batch(
+                        self.bot.db,
+                        guild_id,
+                        channel_id,
+                        week_start,
+                        metric_type,
+                        values,
+                    )
+                )
+            ]
             count = await self.bot.db.upsert_metrics(
                 guild_id, payload, channel_id=channel_id
             )
@@ -962,6 +996,7 @@ class Ingest(commands.Cog):
             lines = [
                 f"**OCR ingest complete** (`{engine_tag}` / `{result.kind}` → week `{week_start}`)",
                 f"Saved **{count}** metric row(s) from **{len(names)}** player(s).",
+                *(f"🚩 {a}" for a in alerts),
                 "",
             ]
             for m in result.metrics[:20]:
@@ -982,7 +1017,7 @@ class Ingest(commands.Cog):
                 channel_id,
                 source.filename,
             )
-            return "\n".join(lines), count, names
+            return "\n".join(lines), count, names, alerts
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -1006,17 +1041,20 @@ class Ingest(commands.Cog):
         guild_id = str(message.guild.id)
         msg_channel_id = channel_id_from_message(message)
         hint = (message.content or "").strip().split()
-        kind = "auto"
+        kind = hint[0].lower() if hint else ""
+        if kind not in DATASET_KINDS:
+            await message.reply(
+                "Which dataset is this? Re-post with the type as the first word "
+                f"of the message: `{DATASET_USAGE}` "
+                "(optionally followed by a week, e.g. `kills current`)."
+            )
+            return
         week = None
-        if hint:
-            token = hint[0].lower()
-            if token in {"versus", "tech", "general", "power", "auto"}:
-                kind = token
-            if len(hint) >= 2:
-                try:
-                    week = parse_week_start(hint[1])
-                except ValueError:
-                    week = None
+        if len(hint) >= 2:
+            try:
+                week = parse_week_start(hint[1])
+            except ValueError:
+                week = None
 
         week_start = week or self._default_week(None)
         sources, notes = await self._load_sources(uploads)
@@ -1049,20 +1087,23 @@ class Ingest(commands.Cog):
     async def ingest_image_prefix(
         self,
         ctx: commands.Context,
-        dataset: str = "auto",
+        dataset: str | None = None,
         week: str | None = None,
     ) -> None:
-        """OCR images or .zip files on this message. Usage: !ingestimage versus current"""
+        """OCR images or .zip files on this message. Usage: !ingestimage kills current"""
+        kind = (dataset or "").lower().strip()
+        if kind not in DATASET_KINDS:
+            await ctx.reply(
+                f"Usage: `!ingestimage <dataset> [week]` — dataset is one of "
+                f"`{DATASET_USAGE}`."
+            )
+            return
         uploads = self._filter_uploads(list(ctx.message.attachments))
         if not uploads:
             await ctx.reply(
                 f"Attach 1–{MAX_ATTACHMENTS_PER_MESSAGE} images or a `.zip` to this "
                 f"message. For larger sets use `/ingest batch` or `/ingest zip`."
             )
-            return
-        kind = dataset.lower().strip()
-        if kind not in {"versus", "tech", "general", "power", "auto"}:
-            await ctx.reply("Dataset must be versus, tech, general, power, or auto.")
             return
         guild_id = guild_id_from_context(ctx)
         channel_id = channel_id_from_context(ctx)
@@ -1087,9 +1128,13 @@ class Ingest(commands.Cog):
             summary = summary[:1900] + "\n…"
         await status.edit(content=summary)
 
-    @commands.command(name="addversus")
-    async def add_versus_prefix(
-        self, ctx: commands.Context, player: str, value: str, week: str | None = None
+    async def _add_single_prefix(
+        self,
+        ctx: commands.Context,
+        metric_type: str,
+        player: str,
+        value: str,
+        week: str | None,
     ) -> None:
         guild_id = guild_id_from_context(ctx)
         channel_id = channel_id_from_context(ctx)
@@ -1099,33 +1144,38 @@ class Ingest(commands.Cog):
             guild_id,
             week_start,
             player,
-            "VersusPoints",
+            metric_type,
             numeric,
             channel_id=channel_id,
         )
         await ctx.reply(
-            f"Saved **{player}** VersusPoints={format_value('VersusPoints', numeric)} `{week_start}`"
+            f"Saved **{player}** {metric_type}="
+            f"{format_value(metric_type, numeric)} `{week_start}`"
         )
+
+    @commands.command(name="addversus")
+    async def add_versus_prefix(
+        self, ctx: commands.Context, player: str, value: str, week: str | None = None
+    ) -> None:
+        await self._add_single_prefix(ctx, "VersusPoints", player, value, week)
 
     @commands.command(name="addtech")
     async def add_tech_prefix(
         self, ctx: commands.Context, player: str, value: str, week: str | None = None
     ) -> None:
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        week_start = self._default_week(week)
-        numeric = parse_numeric_value(value)
-        await self.bot.db.upsert_metric(
-            guild_id,
-            week_start,
-            player,
-            "TechContribution",
-            numeric,
-            channel_id=channel_id,
-        )
-        await ctx.reply(
-            f"Saved **{player}** TechContribution={format_value('TechContribution', numeric)} `{week_start}`"
-        )
+        await self._add_single_prefix(ctx, "TechContribution", player, value, week)
+
+    @commands.command(name="addarena")
+    async def add_arena_prefix(
+        self, ctx: commands.Context, player: str, value: str, week: str | None = None
+    ) -> None:
+        await self._add_single_prefix(ctx, "ArenaPower", player, value, week)
+
+    @commands.command(name="addkills")
+    async def add_kills_prefix(
+        self, ctx: commands.Context, player: str, value: str, week: str | None = None
+    ) -> None:
+        await self._add_single_prefix(ctx, "Kills", player, value, week)
 
     @commands.command(name="addgeneral")
     async def add_general_prefix(

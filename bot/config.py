@@ -107,6 +107,8 @@ METRIC_TYPES = (
     "TechContribution",
     "HQLevel",
     "Power",
+    "ArenaPower",
+    "Kills",
 )
 
 METRIC_ALIASES = {
@@ -118,7 +120,29 @@ METRIC_ALIASES = {
     "hq": "HQLevel",
     "hqlevel": "HQLevel",
     "power": "Power",
+    "arena": "ArenaPower",
+    "arenapower": "ArenaPower",
+    "ap": "ArenaPower",
+    "kills": "Kills",
+    "kill": "Kills",
+    "k": "Kills",
 }
+
+# Screenshot dataset kinds. Leaderboards are ranked "name + value" lists;
+# member cards are the grid with an HQ level and a power figure per player.
+LEADERBOARD_DATASETS = {
+    "versus": "VersusPoints",
+    "tech": "TechContribution",
+    "power": "Power",
+    "kills": "Kills",
+}
+# Member-card kind -> metric for the card's power figure. "general" also keeps
+# HQLevel; "arena" cards show the same HQ level, so only ArenaPower is stored.
+MEMBER_CARD_DATASETS = {
+    "general": "Power",
+    "arena": "ArenaPower",
+}
+DATASET_KINDS = (*LEADERBOARD_DATASETS, *MEMBER_CARD_DATASETS)
 
 
 def resolve_metric(name: str) -> str:
@@ -130,5 +154,5 @@ def resolve_metric(name: str) -> str:
         if metric.lower() == key:
             return metric
     raise ValueError(
-        f"Unknown metric '{name}'. Valid: versus, tech, hq, power"
+        f"Unknown metric '{name}'. Valid: versus, tech, hq, power, arena, kills"
     )

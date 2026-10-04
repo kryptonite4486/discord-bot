@@ -285,6 +285,40 @@ class Database:
         await self.conn.commit()
         return len(payload)
 
+    async def get_latest_values(
+        self,
+        guild_id: str,
+        metric_type: str,
+        players: Iterable[str],
+        *,
+        channel_id: str,
+        week_start: str,
+        include_week: bool,
+    ) -> dict[str, float]:
+        """
+        Most recent value per player (keyed by lowercased name) for one
+        guild+channel, from weeks before ``week_start`` (or on/before it when
+        ``include_week``).
+        """
+        names = sorted({p.strip().lower() for p in players if p and p.strip()})
+        if not names:
+            return {}
+        placeholders = ",".join("?" for _ in names)
+        op = "<=" if include_week else "<"
+        sql = f"""
+            SELECT PlayerName, Value
+            FROM WeeklyMetrics
+            WHERE GuildId = ? AND ChannelId = ? AND MetricType = ?
+              AND WeekStart {op} ? AND lower(PlayerName) IN ({placeholders})
+            ORDER BY WeekStart
+        """
+        params = [guild_id, str(channel_id), metric_type, week_start, *names]
+        latest: dict[str, float] = {}
+        async with self.conn.execute(sql, params) as cursor:
+            async for row in cursor:
+                latest[row["PlayerName"].lower()] = float(row["Value"])
+        return latest
+
     async def assign_channel(
         self,
         guild_id: str,

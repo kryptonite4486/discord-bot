@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from bot.config import LEADERBOARD_DATASETS, MEMBER_CARD_DATASETS
 from bot.utils.parsing import parse_numeric_value
 
 if TYPE_CHECKING:
@@ -15,7 +16,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DatasetKind = Literal["versus", "tech", "general", "power", "auto"]
+# Keep in sync with bot.config.DATASET_KINDS.
+DatasetKind = Literal["versus", "tech", "general", "power", "arena", "kills"]
 
 # Noise tokens commonly read from UI chrome
 NOISE_TOKENS = {
@@ -846,29 +848,25 @@ def parse_general_rows(
     return metrics
 
 
-def detect_kind(items: list[tuple[str, float, tuple]], raw_text: str) -> str:
-    """Heuristic dataset detection from OCR tokens."""
-    joined = raw_text.lower()
-    has_power_m = any(re.search(r"\d+\.?\d*\s*[Mm]\b", t[0]) for t in items)
-    has_alliance = "[" in raw_text and "]" in raw_text
-    large_commas = len(re.findall(r"\d{1,3}(?:,\d{3})+", raw_text))
-
-    if has_power_m or "hq" in joined:
-        return "general"
-    if has_alliance and large_commas >= 2:
-        # Alliance power boards still map via caller metric; treat as leaderboard
-        return "versus"
-    if large_commas >= 2:
-        return "versus"
-    return "versus"
+def relabel_member_cards(
+    metrics: list[ExtractedMetric], kind: str
+) -> list[ExtractedMetric]:
+    """Map member-card rows (HQLevel + Power) to the metrics ``kind`` stores."""
+    if kind == "general":
+        return metrics
+    power_metric = MEMBER_CARD_DATASETS[kind]
+    return [
+        ExtractedMetric(m.player_name, power_metric, m.value)
+        for m in metrics
+        if m.metric_type == "Power"
+    ]
 
 
 def extract_metrics_from_image(
     image_path: Path | str,
     *,
-    kind: DatasetKind = "auto",
+    kind: DatasetKind,
     engine: OCREngine | None = None,
-    metric_type_override: str | None = None,
 ) -> OCRResult:
     """
     Run OCR and parse into WeeklyMetrics-ready rows.
@@ -878,8 +876,14 @@ def extract_metrics_from_image(
       - tech -> TechContribution
       - general -> HQLevel + Power
       - power -> Power (leaderboard-style values)
-      - auto -> detect
+      - kills -> Kills (leaderboard-style values)
+      - arena -> ArenaPower (member cards, same layout as general)
+
+    Screens of the same layout are indistinguishable (general vs arena, power
+    vs kills), so the caller must always say which one a screenshot is.
     """
+    if kind not in LEADERBOARD_DATASETS and kind not in MEMBER_CARD_DATASETS:
+        raise ValueError(f"Unknown dataset kind: {kind!r}")
     engine = engine or OCREngine("easyocr")
 
     if engine.is_vision:
@@ -898,7 +902,6 @@ def extract_metrics_from_image(
                 model=engine.vision_model,
                 api_key=engine.vision_api_key,
                 timeout=engine.vision_timeout,
-                metric_type_override=metric_type_override,
             )
         except Exception as exc:
             log.exception(
@@ -912,19 +915,13 @@ def extract_metrics_from_image(
     raw_text = "\n".join(t[0] for t in items)
     warnings: list[str] = []
 
-    detected = kind if kind != "auto" else detect_kind(items, raw_text)
-    log.info("OCR detected kind=%s tokens=%d", detected, len(items))
+    log.info("OCR kind=%s tokens=%d", kind, len(items))
 
     metrics: list[ExtractedMetric] = []
-    if detected == "general":
-        metrics = parse_general_rows(items)
+    if kind in MEMBER_CARD_DATASETS:
+        metrics = relabel_member_cards(parse_general_rows(items), kind)
     else:
-        metric_type = metric_type_override or {
-            "tech": "TechContribution",
-            "power": "Power",
-            "versus": "VersusPoints",
-        }.get(detected, "VersusPoints")
-        metrics = parse_leaderboard_rows(items, metric_type)
+        metrics = parse_leaderboard_rows(items, LEADERBOARD_DATASETS[kind])
 
     # Deduplicate by (player, metric), keep last
     dedup: dict[tuple[str, str], ExtractedMetric] = {}
@@ -934,7 +931,7 @@ def extract_metrics_from_image(
 
     if not metrics:
         warnings.append(
-            "No player metrics parsed. Try a tighter crop or set the dataset type explicitly."
+            "No player metrics parsed. Try a tighter crop or check the dataset type."
         )
 
-    return OCRResult(kind=detected, metrics=metrics, raw_text=raw_text, warnings=warnings)
+    return OCRResult(kind=kind, metrics=metrics, raw_text=raw_text, warnings=warnings)

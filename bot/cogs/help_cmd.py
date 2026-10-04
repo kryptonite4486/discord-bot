@@ -23,6 +23,8 @@ Admin
 Add / Ingest
   /add versus       Add Versus Points for a player
   /add tech         Add Tech Contribution for a player
+  /add arena        Add Arena Power for a player
+  /add kills        Add total Kills for a player
   /add general      Add HQ Level and Power
   /ingest image     OCR up to 10 images on this command
   /ingest zip       OCR every image in a .zip (up to 50)
@@ -55,7 +57,13 @@ Help
 Week args accept `YYYY-MM-DD`, `current`, or `last` (normalized to Sunday).
 Discord allows ~10 attachments per message; use `/ingest zip` or `/ingest batch`
 for larger sets. Zip uploads are bound by your server's file size limit.
-If `OCR_CHANNEL_ID` is set, images and .zip files posted there are auto-ingested.
+If `OCR_CHANNEL_ID` is set, images and .zip files posted there are ingested; start
+the message with the dataset (e.g. `kills current`).
+
+Every image import needs a **dataset**: versus, tech, general, power, arena or kills.
+Lookalike screens: General vs Arena (member cards) and Power vs Kills (leaderboards).
+The bot flags (🚩) uploads that look like the wrong one, e.g. Arena Power near total
+Power, Power collapsing week over week, or Kills going down or jumping 5x+.
 """
 
 

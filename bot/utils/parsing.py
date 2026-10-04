@@ -89,7 +89,8 @@ def parse_numeric_value(raw: str | int | float) -> float:
     value = float(number_part)
     if suffix:
         mult = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}[suffix.lower()]
-        value *= mult
+        # round() drops float noise such as 8.3M -> 8300000.000000001
+        value = round(value * mult, 6)
     return value
 
 
@@ -100,7 +101,13 @@ def format_value(metric_type: str, value: float) -> str:
 
     # Use magnitude for thresholds so negative deltas stay abbreviated (-2.3M),
     # matching positive shorthand (2.3M) in growth/leaderboard reports.
-    if metric_type in {"Power", "VersusPoints", "TechContribution"}:
+    if metric_type in {
+        "Power",
+        "VersusPoints",
+        "TechContribution",
+        "ArenaPower",
+        "Kills",
+    }:
         sign = "-" if value < 0 else ""
         mag = abs(float(value))
         if mag >= 1_000_000_000:

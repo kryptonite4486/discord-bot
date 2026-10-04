@@ -29,6 +29,8 @@ METRIC_CHOICES = [
     app_commands.Choice(name="Tech Contribution", value="tech"),
     app_commands.Choice(name="HQ Level", value="hq"),
     app_commands.Choice(name="Power", value="power"),
+    app_commands.Choice(name="Arena Power", value="arena"),
+    app_commands.Choice(name="Kills", value="kills"),
 ]
 
 SCOPE_CHOICES = [
