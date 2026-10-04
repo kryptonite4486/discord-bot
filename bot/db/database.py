@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import aiosqlite
 
@@ -179,25 +179,37 @@ class Database:
     @staticmethod
     def _channel_scope_sql(
         *,
-        channel_id: str | None,
-        include_unassigned: bool,
-        guild_param_index: int = 1,
+        channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
+        include_unassigned: bool = False,
     ) -> tuple[str, list[Any]]:
         """
-        Build ChannelId filter for Phase 1.
+        Build ChannelId filter.
 
+        - channel_ids set: ChannelId IN (...)
         - channel_id set + include_unassigned: ChannelId IN (channel, '')
-        - channel_id set + not include_unassigned: ChannelId = channel
-        - channel_id None: no channel filter (guild-wide)
+        - channel_id set: ChannelId = channel
+        - neither: no channel filter (guild-wide)
         """
-        if channel_id is None:
+        ids: list[str] | None = None
+        if channel_ids is not None:
+            ids = [str(c) for c in channel_ids]
+        elif channel_id is not None:
+            ids = [str(channel_id)]
+
+        if ids is None:
             return "", []
-        if include_unassigned:
-            return (
-                f" AND (ChannelId = ? OR ChannelId = ?)",
-                [channel_id, UNASSIGNED_CHANNEL_ID],
-            )
-        return " AND ChannelId = ?", [channel_id]
+
+        if include_unassigned and UNASSIGNED_CHANNEL_ID not in ids:
+            ids = [*ids, UNASSIGNED_CHANNEL_ID]
+
+        if not ids:
+            return " AND 0", []
+
+        if len(ids) == 1:
+            return " AND ChannelId = ?", ids
+        placeholders = ",".join("?" * len(ids))
+        return f" AND ChannelId IN ({placeholders})", ids
 
     async def upsert_metric(
         self,
@@ -338,26 +350,57 @@ class Database:
         limit: int | None = None,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
-        clauses = ["GuildId = ?", "PlayerName = ? COLLATE NOCASE"]
-        params: list[Any] = [guild_id, player_name]
+        """
+        Return a player's rows with Rank and Population within their data channel.
+
+        Rank is 1-based among all players in the same GuildId + ChannelId +
+        WeekStart + MetricType (ordered by Value descending). Population is
+        that group's size.
+        """
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
-        # _channel_scope_sql returns AND ... — splice into WHERE
+        player_clauses = ["PlayerName = ? COLLATE NOCASE"]
+        player_params: list[Any] = [player_name]
         if metric_type:
-            clauses.append("MetricType = ?")
-            params.append(metric_type)
-        where = " AND ".join(clauses) + extra_sql
-        params.extend(extra_params)
+            player_clauses.append("MetricType = ?")
+            player_params.append(metric_type)
+        player_where = " AND ".join(player_clauses) + extra_sql
+        player_params.extend(extra_params)
 
         sql = f"""
-            SELECT GuildId, ChannelId, WeekStart, PlayerName, MetricType, Value, UpdatedAt
-            FROM WeeklyMetrics
-            WHERE {where}
+            WITH ranked AS (
+                SELECT
+                    GuildId,
+                    ChannelId,
+                    WeekStart,
+                    PlayerName,
+                    MetricType,
+                    Value,
+                    UpdatedAt,
+                    RANK() OVER (
+                        PARTITION BY GuildId, ChannelId, WeekStart, MetricType
+                        ORDER BY Value DESC, PlayerName COLLATE NOCASE
+                    ) AS Rank,
+                    COUNT(*) OVER (
+                        PARTITION BY GuildId, ChannelId, WeekStart, MetricType
+                    ) AS Population
+                FROM WeeklyMetrics
+                WHERE GuildId = ?
+            )
+            SELECT
+                GuildId, ChannelId, WeekStart, PlayerName, MetricType, Value,
+                UpdatedAt, Rank, Population
+            FROM ranked
+            WHERE {player_where}
             ORDER BY WeekStart DESC, MetricType
         """
+        params: list[Any] = [guild_id, *player_params]
         if limit:
             sql += " LIMIT ?"
             params.append(limit)
@@ -373,10 +416,13 @@ class Database:
         metric_type: str | None = None,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
         if metric_type:
             sql = f"""
@@ -407,11 +453,14 @@ class Database:
         player_name: str | None = None,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         """Return recent weekly values for a metric, optionally for one player."""
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
         week_filter_sql = f"""
             SELECT DISTINCT WeekStart
@@ -458,6 +507,7 @@ class Database:
         weeks: int = 4,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         trends = await self.get_trends(
@@ -465,6 +515,7 @@ class Database:
             metric_type,
             weeks=weeks,
             channel_id=channel_id,
+            channel_ids=channel_ids,
             include_unassigned=include_unassigned,
         )
         by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -505,10 +556,13 @@ class Database:
         limit: int | None = None,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[dict[str, Any]]:
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
         if week_start is None:
             async with self.conn.execute(
@@ -545,10 +599,13 @@ class Database:
         limit: int = 52,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[str]:
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
         async with self.conn.execute(
             f"""
@@ -566,10 +623,13 @@ class Database:
         guild_id: str,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> list[str]:
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
         async with self.conn.execute(
             f"""
@@ -587,10 +647,13 @@ class Database:
         guild_id: str,
         *,
         channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
     ) -> dict[str, Any]:
         extra_sql, extra_params = self._channel_scope_sql(
-            channel_id=channel_id, include_unassigned=include_unassigned
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
         )
         async with self.conn.execute(
             f"SELECT COUNT(*) AS c FROM WeeklyMetrics WHERE GuildId = ?{extra_sql}",
@@ -634,3 +697,18 @@ class Database:
             "channel_id": channel_id,
             "unassigned_rows": unassigned,
         }
+
+    async def channel_row_counts(self, guild_id: str) -> list[tuple[str, int]]:
+        """Return (ChannelId, row_count) for every channel bucket in a guild."""
+        async with self.conn.execute(
+            """
+            SELECT ChannelId, COUNT(*) AS c
+            FROM WeeklyMetrics
+            WHERE GuildId = ?
+            GROUP BY ChannelId
+            ORDER BY c DESC, ChannelId
+            """,
+            (guild_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(str(r["ChannelId"]), int(r["c"])) for r in rows]

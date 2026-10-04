@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 import discord
 from discord.ext import commands
 
@@ -57,3 +59,37 @@ def channel_id_from_context(ctx: commands.Context) -> str:
 
 def channel_id_from_message(message: discord.Message) -> str:
     return str(message.channel.id)
+
+
+def channel_display_name(
+    guild: discord.Guild | None,
+    channel_id: str | None,
+    *,
+    names: dict[str, str] | None = None,
+) -> str:
+    """Human-readable channel label; prefer #name over snowflake."""
+    if not channel_id:
+        return "(unassigned)"
+    cid = str(channel_id)
+    if names and cid in names:
+        return names[cid]
+    if guild is not None:
+        try:
+            ch = guild.get_channel(int(cid))
+        except (TypeError, ValueError):
+            ch = None
+        if ch is not None:
+            return f"#{ch.name}"
+    return f"#unknown-{cid[-4:]}"
+
+
+def channel_name_map(
+    guild: discord.Guild | None,
+    channel_ids: Iterable[str],
+) -> dict[str, str]:
+    """Resolve many channel ids to #name labels for report tables."""
+    return {
+        cid: channel_display_name(guild, cid)
+        for cid in channel_ids
+        if cid is not None
+    }

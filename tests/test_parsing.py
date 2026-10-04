@@ -119,6 +119,10 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
             player = await db.get_player_metrics(guild_a, "princesspea")
             self.assertEqual(len(player), 2)
+            # Only one HQLevel / Power row each in guild_a for that week → rank 1/1
+            by_metric = {r["MetricType"]: r for r in player}
+            self.assertEqual(by_metric["HQLevel"]["Rank"], 1)
+            self.assertEqual(by_metric["HQLevel"]["Population"], 1)
 
             board = await db.get_leaderboard(guild_a, "VersusPoints", "2026-09-28")
             self.assertEqual(board[0]["PlayerName"], "EnemyHelicopter")
@@ -133,7 +137,36 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stats["unassigned_rows"], 0)
             await db.close()
 
-    async def test_channel_phase1_includes_unassigned(self) -> None:
+    async def test_player_rank_within_channel_population(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "rank.db")
+            await db.connect()
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Alice", "Power", 3000, channel_id="ch-a"
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Bob", "Power", 2000, channel_id="ch-a"
+            )
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Carol", "Power", 1000, channel_id="ch-a"
+            )
+            # Other channel must not affect ch-a ranks
+            await db.upsert_metric(
+                "g1", "2026-09-28", "Zed", "Power", 99999, channel_id="ch-b"
+            )
+
+            bob = await db.get_player_metrics(
+                "g1", "Bob", channel_ids=["ch-a"]
+            )
+            self.assertEqual(len(bob), 1)
+            self.assertEqual(bob[0]["Rank"], 2)
+            self.assertEqual(bob[0]["Population"], 3)
+
+            from bot.reporting.formatters import player_report_text
+
+            text = player_report_text("Bob", bob)
+            self.assertIn("2/3", text)
+            await db.close()
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "ch.db")
             await db.connect()

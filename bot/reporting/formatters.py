@@ -8,10 +8,16 @@ from typing import Any, Iterable
 from bot.utils import parsing as parsing_utils
 
 
-def _channel_label(channel_id: str | None) -> str:
+def _channel_label(
+    channel_id: str | None,
+    channel_names: dict[str, str] | None = None,
+) -> str:
     if not channel_id:
         return "(unassigned)"
-    return str(channel_id)
+    cid = str(channel_id)
+    if channel_names and cid in channel_names:
+        return channel_names[cid]
+    return cid
 
 
 def markdown_table(headers: list[str], rows: Iterable[list[str]]) -> str:
@@ -26,6 +32,7 @@ def week_summary_text(
     rows: list[dict[str, Any]],
     *,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> str:
     if not rows:
         return f"No metrics found for week **{week}**."
@@ -45,7 +52,7 @@ def week_summary_text(
                 [
                     str(i),
                     r["PlayerName"],
-                    _channel_label(r.get("ChannelId")),
+                    _channel_label(r.get("ChannelId"), channel_names),
                     parsing_utils.format_value(metric, r["Value"]),
                 ]
                 for i, r in enumerate(items, start=1)
@@ -72,6 +79,7 @@ def player_report_text(
     rows: list[dict[str, Any]],
     *,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> str:
     if not rows:
         return f"No metrics found for player **{player}**."
@@ -80,36 +88,59 @@ def player_report_text(
     for row in rows:
         by_metric[row["MetricType"]].append(row)
 
+    def _rank_cell(r: dict[str, Any]) -> str:
+        rank = r.get("Rank")
+        pop = r.get("Population")
+        if rank is None or pop is None:
+            return "—"
+        return f"{int(rank)}/{int(pop)}"
+
     parts = [f"## Player Report — **{player}**", ""]
     for metric, items in sorted(by_metric.items()):
-        # rows come DESC by week; reverse for chronological table
-        chronological = list(reversed(items))
+        chronological = sorted(items, key=lambda r: (r["WeekStart"], r.get("ChannelId") or ""))
         if show_channel:
             table_rows = [
                 [
                     r["WeekStart"],
-                    _channel_label(r.get("ChannelId")),
+                    _channel_label(r.get("ChannelId"), channel_names),
+                    _rank_cell(r),
                     parsing_utils.format_value(metric, r["Value"]),
                 ]
                 for r in chronological[-12:]
             ]
             parts.append(f"### {metric}")
-            parts.append(markdown_table(["Week", "Channel", "Value"], table_rows))
+            parts.append(
+                markdown_table(["Week", "Channel", "Rank", "Value"], table_rows)
+            )
         else:
+            shown = chronological[-12:]
             table_rows = [
-                [r["WeekStart"], parsing_utils.format_value(metric, r["Value"])]
-                for r in chronological[-12:]
+                [
+                    r["WeekStart"],
+                    _rank_cell(r),
+                    parsing_utils.format_value(metric, r["Value"]),
+                ]
+                for r in shown
             ]
             parts.append(f"### {metric}")
-            parts.append(markdown_table(["Week", "Value"], table_rows))
-        if len(chronological) >= 2 and not show_channel:
-            delta = chronological[-1]["Value"] - chronological[0]["Value"]
-            parts.append(
-                f"Change ({chronological[0]['WeekStart']} → "
-                f"{chronological[-1]['WeekStart']}): "
-                f"**{parsing_utils.format_value(metric, delta)}** "
-                f"({'+' if delta >= 0 else ''}{delta:,.1f})"
-            )
+            parts.append(markdown_table(["Week", "Rank", "Value"], table_rows))
+            if len(shown) >= 2:
+                if metric in {"TechContribution", "VersusPoints"}:
+                    avg = sum(r["Value"] for r in shown) / len(shown)
+                    parts.append(
+                        f"Average ({shown[0]['WeekStart']} → "
+                        f"{shown[-1]['WeekStart']}, {len(shown)} weeks): "
+                        f"**{parsing_utils.format_value(metric, avg)}** "
+                        f"({avg:,.1f})"
+                    )
+                else:
+                    delta = shown[-1]["Value"] - shown[0]["Value"]
+                    parts.append(
+                        f"Change ({shown[0]['WeekStart']} → "
+                        f"{shown[-1]['WeekStart']}): "
+                        f"**{parsing_utils.format_value(metric, delta)}** "
+                        f"({'+' if delta >= 0 else ''}{delta:,.1f})"
+                    )
         parts.append("")
     return "\n".join(parts).strip()
 
@@ -119,6 +150,7 @@ def _growth_table_rows(
     rows: list[dict[str, Any]],
     *,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> list[list[str]]:
     table_rows: list[list[str]] = []
     for r in rows:
@@ -129,7 +161,7 @@ def _growth_table_rows(
         )
         cells = [r["PlayerName"]]
         if show_channel:
-            cells.append(_channel_label(r.get("ChannelId")))
+            cells.append(_channel_label(r.get("ChannelId"), channel_names))
         cells.extend(
             [
                 parsing_utils.format_value(metric, r["FirstValue"]),
@@ -150,6 +182,7 @@ def growth_report_text(
     top_n: int = 15,
     bottom_n: int = 15,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> str:
     """Discord summary: top N and bottom N by growth (rows sorted desc)."""
     if not rows:
@@ -171,7 +204,10 @@ def growth_report_text(
         parts.append(f"### All ({len(rows)})")
         parts.append(
             markdown_table(
-                headers, _growth_table_rows(metric, rows, show_channel=show_channel)
+                headers,
+                _growth_table_rows(
+                    metric, rows, show_channel=show_channel, channel_names=channel_names
+                ),
             )
         )
         return "\n".join(parts).strip()
@@ -181,14 +217,20 @@ def growth_report_text(
     parts.append(f"### Top {len(top)} (highest growth)")
     parts.append(
         markdown_table(
-            headers, _growth_table_rows(metric, top, show_channel=show_channel)
+            headers,
+            _growth_table_rows(
+                metric, top, show_channel=show_channel, channel_names=channel_names
+            ),
         )
     )
     parts.append("")
     parts.append(f"### Bottom {len(bottom)} (lowest growth)")
     parts.append(
         markdown_table(
-            headers, _growth_table_rows(metric, bottom, show_channel=show_channel)
+            headers,
+            _growth_table_rows(
+                metric, bottom, show_channel=show_channel, channel_names=channel_names
+            ),
         )
     )
     if len(rows) < top_n + bottom_n:
@@ -197,57 +239,65 @@ def growth_report_text(
             f"(N={len(rows)} < {top_n + bottom_n}: top and bottom lists overlap.)"
         )
     parts.append("")
-    parts.append("Full ranked list attached as a markdown file.")
+    parts.append("Full ranked list attached as a CSV file.")
     return "\n".join(parts).strip()
 
 
-def growth_report_full_markdown(
+def _csv_cell(value: Any) -> str:
+    """Serialize a CSV field with no commas (delimiter-only commas in the file)."""
+    text = str(value if value is not None else "")
+    return (
+        text.replace(",", "")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .strip()
+    )
+
+
+def growth_report_full_csv(
     metric: str,
     weeks: int,
     rows: list[dict[str, Any]],
     *,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> str:
-    """Complete growth ranking for download as a .md file."""
+    """Complete growth ranking for download as a .csv file (comma delimiter only)."""
     if not rows:
-        return f"# Growth Report — {metric} ({weeks} weeks)\n\nNo data.\n"
+        return "Rank,Player,First,Last,Delta,GrowthPct\n"
 
-    headers = (
-        ["#", "Player", "Channel", "First", "Last", "Δ", "Growth"]
-        if show_channel
-        else ["#", "Player", "First", "Last", "Δ", "Growth"]
-    )
-    table_rows: list[list[str]] = []
+    headers = ["Rank", "Player"]
+    if show_channel:
+        headers.append("Channel")
+    headers.extend(["First", "Last", "Delta", "GrowthPct", "FirstWeek", "LastWeek"])
+
+    lines = [",".join(headers)]
     for i, r in enumerate(rows, start=1):
         growth = (
             f"{r['GrowthPct']:+.1f}%"
             if r["GrowthPct"] is not None
             else "n/a"
         )
-        cells = [str(i), r["PlayerName"]]
+        cells = [
+            _csv_cell(i),
+            _csv_cell(r["PlayerName"]),
+        ]
         if show_channel:
-            cells.append(_channel_label(r.get("ChannelId")))
+            cells.append(
+                _csv_cell(_channel_label(r.get("ChannelId"), channel_names))
+            )
         cells.extend(
             [
-                parsing_utils.format_value(metric, r["FirstValue"]),
-                parsing_utils.format_value(metric, r["LastValue"]),
-                parsing_utils.format_value(metric, r["Delta"]),
-                growth,
+                _csv_cell(parsing_utils.format_value(metric, r["FirstValue"])),
+                _csv_cell(parsing_utils.format_value(metric, r["LastValue"])),
+                _csv_cell(parsing_utils.format_value(metric, r["Delta"])),
+                _csv_cell(growth),
+                _csv_cell(r.get("FirstWeek", "")),
+                _csv_cell(r.get("LastWeek", "")),
             ]
         )
-        table_rows.append(cells)
-
-    first_week = rows[0].get("FirstWeek", "?")
-    last_week = rows[0].get("LastWeek", "?")
-    parts = [
-        f"# Growth Report — {metric}",
-        f"Lookback: {weeks} weeks ({first_week} → {last_week})",
-        f"Series: {len(rows)}",
-        "",
-        markdown_table(headers, table_rows),
-        "",
-    ]
-    return "\n".join(parts)
+        lines.append(",".join(cells))
+    return "\n".join(lines) + "\n"
 
 
 def leaderboard_text(
@@ -256,6 +306,7 @@ def leaderboard_text(
     rows: list[dict[str, Any]],
     *,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> str:
     if not rows:
         return f"No leaderboard data for **{metric}** (week {week})."
@@ -267,7 +318,7 @@ def leaderboard_text(
             [
                 str(i),
                 r["PlayerName"],
-                _channel_label(r.get("ChannelId")),
+                _channel_label(r.get("ChannelId"), channel_names),
                 parsing_utils.format_value(metric, r["Value"]),
             ]
             for i, r in enumerate(rows, start=1)
@@ -288,6 +339,7 @@ def trend_summary_text(
     top_n: int = 10,
     *,
     show_channel: bool = False,
+    channel_names: dict[str, str] | None = None,
 ) -> str:
     if not rows:
         return f"No trend data for **{metric}**."
@@ -312,7 +364,7 @@ def trend_summary_text(
     for (player, ch_id), series in ranked:
         spark = " → ".join(parsing_utils.format_value(metric, r["Value"]) for r in series)
         label = (
-            f"**{player}** [{_channel_label(ch_id)}]"
+            f"**{player}** [{_channel_label(ch_id, channel_names)}]"
             if show_channel
             else f"**{player}**"
         )

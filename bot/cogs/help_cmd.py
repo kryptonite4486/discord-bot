@@ -12,14 +12,13 @@ HELP_TEXT = """\
 **Weekly Metrics Bot — Commands**
 
 Data is stored **per Discord server + channel**. Commands only work in a server
-(DMs unsupported). Default reports use the **current channel**; pass
-`scope: Entire server` for a multi-channel breakout (same server only).
+(DMs unsupported).
 
 ```
 Admin
-  /admin reload          Reload a cog module
-  /admin sync            Sync slash commands
-  /admin stats           Datastore statistics (this server)
+  /admin reload          Reload a cog module (Administrator)
+  /admin sync            Sync slash commands (Administrator)
+  /admin stats           Datastore stats (this channel; scope:server for all)
 
 Add / Ingest
   /add versus       Add Versus Points for a player
@@ -32,12 +31,20 @@ Add / Ingest
 Reports
   /report week      Weekly summary — all players
   /report player    Player history + chart
-  /report versus    Versus Points leaderboard (all)
-  /report tech      Tech Contribution leaderboard (all)
+  /report versus    Versus Points leaderboard
+  /report tech      Tech Contribution leaderboard
   /report trend     Multi-week metric trends
-  /report growth    Top/bottom 15 growth + full .md file
-  /report leaderboard  Ranked list (all; optional limit) + chart
-  (all reports accept scope: This channel | Entire server)
+  /report growth    Top/bottom 15 growth + full .csv file
+  /report leaderboard  Ranked list (optional limit) + chart
+
+Report scope (same server only — never cross-server)
+  Every /report requires **scope**:
+    • Select Channels — picker of channels that have ingested data
+    • All Channels — every channel with data in this server
+  Optional channel / channel2 / channel3 skip the picker (shortcut).
+  Multi-channel reports show a Channel column (#name).
+  Player values are not summed across channels; each row stays separate.
+  Charts are omitted when more than one channel is included.
 
 Help
   /help             Show this command list

@@ -103,7 +103,14 @@ class WeeklyMetricsBot(commands.Bot):
             len(self.guilds),
         )
         if not self._guild_commands_synced:
-            # Guild sync is immediate; avoids "command is outdated" after redeploys.
+            # Keep global + guild schemas in lockstep. Stale global commands
+            # (e.g. /report growth without scope) confuse Discord clients even
+            # when guild commands are up to date.
+            try:
+                synced = await self.tree.sync()
+                log.info("Synced %d global application commands", len(synced))
+            except Exception:
+                log.exception("Failed to sync global application commands")
             for g in list(self.guilds):
                 try:
                     self.tree.copy_global_to(guild=g)
