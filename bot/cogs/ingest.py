@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
 import discord
@@ -13,6 +15,14 @@ from discord.ext import commands
 
 from bot.config import resolve_metric
 from bot.ocr import OCREngine, extract_metrics_from_image
+from bot.utils.archive import (
+    MAX_ZIP_IMAGES,
+    ArchiveError,
+    ImageSource,
+    extract_images_from_zip,
+    is_image_name,
+    is_zip_upload,
+)
 from bot.utils.guild import (
     channel_id_from_context,
     channel_id_from_interaction,
@@ -33,6 +43,13 @@ log = logging.getLogger(__name__)
 MAX_INGEST_IMAGES = 20
 # Discord's hard limit on attachments per message / slash interaction.
 MAX_ATTACHMENTS_PER_MESSAGE = 10
+# Cap for one run once a .zip is involved (loose images still cap at 20).
+MAX_BATCH_IMAGES = MAX_ZIP_IMAGES
+# Refuse to download zips larger than this (Discord's own upload cap is lower
+# on most servers; this is a sanity bound).
+MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024
+
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 DATASET_CHOICES = [
     app_commands.Choice(name="Auto-detect", value="auto"),
@@ -54,14 +71,11 @@ DATASET_REQUIRED_CHOICES = [
 def _is_image_attachment(attachment: discord.Attachment) -> bool:
     if attachment.content_type and attachment.content_type.startswith("image/"):
         return True
-    return Path(attachment.filename).suffix.lower() in {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-        ".bmp",
-    }
+    return is_image_name(attachment.filename)
+
+
+def _is_zip_attachment(attachment: discord.Attachment) -> bool:
+    return is_zip_upload(attachment.filename, attachment.content_type)
 
 
 class Ingest(commands.Cog):
@@ -129,21 +143,123 @@ class Ingest(commands.Cog):
         return unique[:limit]
 
     @staticmethod
-    def _merge_unique(
-        *groups: list[discord.Attachment],
-        limit: int = MAX_INGEST_IMAGES,
+    def _filter_uploads(
+        attachments: Sequence[discord.Attachment | None],
+        *,
+        limit: int = MAX_ATTACHMENTS_PER_MESSAGE,
     ) -> list[discord.Attachment]:
+        """Images and .zip archives, de-duplicated, in upload order."""
         seen: set[int] = set()
         out: list[discord.Attachment] = []
-        for group in groups:
-            for image in group:
-                if image.id in seen:
+        for a in attachments:
+            if a is None or a.id in seen:
+                continue
+            if not (_is_image_attachment(a) or _is_zip_attachment(a)):
+                continue
+            seen.add(a.id)
+            out.append(a)
+        return out[:limit]
+
+    async def _load_sources(
+        self, attachments: Sequence[discord.Attachment]
+    ) -> tuple[list[ImageSource], list[str]]:
+        """Download attachments, expanding .zip files into their images."""
+        sources: list[ImageSource] = []
+        notes: list[str] = []
+        for a in attachments:
+            if _is_zip_attachment(a):
+                if a.size > MAX_ZIP_UPLOAD_BYTES:
+                    notes.append(
+                        f"Skipped `{a.filename}` "
+                        f"({a.size // (1024 * 1024)} MB is over the "
+                        f"{MAX_ZIP_UPLOAD_BYTES // (1024 * 1024)} MB zip limit)."
+                    )
                     continue
-                seen.add(image.id)
-                out.append(image)
-                if len(out) >= limit:
-                    return out
+                try:
+                    blob = await a.read()
+                    images, warnings = await asyncio.to_thread(
+                        extract_images_from_zip,
+                        blob,
+                        archive_name=a.filename,
+                        key_prefix=f"zip:{a.id}",
+                    )
+                except ArchiveError as exc:
+                    notes.append(f"Skipped {exc}.")
+                    continue
+                except discord.HTTPException as exc:
+                    notes.append(f"Could not download `{a.filename}`: {exc}")
+                    continue
+                notes.extend(warnings)
+                if not images:
+                    notes.append(f"No images found in `{a.filename}`.")
+                log.info(
+                    "Expanded zip %s -> %d image(s)", a.filename, len(images)
+                )
+                sources.extend(images)
+            elif _is_image_attachment(a):
+                try:
+                    blob = await a.read()
+                except discord.HTTPException as exc:
+                    notes.append(f"Could not download `{a.filename}`: {exc}")
+                    continue
+                sources.append(
+                    ImageSource(key=f"att:{a.id}", filename=a.filename, data=blob)
+                )
+        return sources, notes
+
+    @staticmethod
+    def _merge_sources(
+        collected: list[ImageSource],
+        new: list[ImageSource],
+        *,
+        limit: int,
+        loose_limit: int = MAX_INGEST_IMAGES,
+    ) -> list[ImageSource]:
+        """Append unseen sources; loose images stop at ``loose_limit``."""
+        seen = {s.key for s in collected}
+        out = list(collected)
+        loose = sum(1 for s in out if not s.from_archive)
+        for source in new:
+            if len(out) >= limit:
+                break
+            if source.key in seen:
+                continue
+            if not source.from_archive:
+                if loose >= loose_limit:
+                    continue
+                loose += 1
+            seen.add(source.key)
+            out.append(source)
         return out
+
+    @staticmethod
+    def _cap_sources(
+        sources: list[ImageSource],
+    ) -> list[ImageSource]:
+        """Apply the per-run caps to a single upload's sources."""
+        return Ingest._merge_sources([], sources, limit=MAX_BATCH_IMAGES)
+
+    @staticmethod
+    def _progress_editor(
+        message: discord.Message, label: str, *, min_interval: float = 5.0
+    ) -> ProgressCallback:
+        """Throttled callback that edits ``message`` with OCR progress."""
+        last = 0.0
+
+        async def update(index: int, total: int, filename: str) -> None:
+            nonlocal last
+            now = time.monotonic()
+            if now - last < min_interval:
+                return
+            last = now
+            try:
+                await message.edit(
+                    content=f"{label}\nOCR **{index}/{total}** — `{filename}`"
+                )
+            except discord.HTTPException:
+                pass
+
+        return update
 
     add = app_commands.Group(name="add", description="Manually add weekly metrics")
     ingest = app_commands.Group(name="ingest", description="Ingest metrics from files/images")
@@ -333,8 +449,8 @@ class Ingest(commands.Cog):
             await interaction.response.send_message(
                 "Please upload at least one image file.\n"
                 f"Tip: Discord allows **{MAX_ATTACHMENTS_PER_MESSAGE}** attachments "
-                f"per message. For larger sets use `/ingest batch` "
-                f"(up to {MAX_INGEST_IMAGES}).\n"
+                f"per message. For larger sets use `/ingest zip` (up to "
+                f"{MAX_BATCH_IMAGES} in one .zip) or `/ingest batch`.\n"
                 "Fill **image / image2 / …** separately — multi-select on one "
                 "slot usually only sends the first file.",
                 ephemeral=True,
@@ -361,14 +477,99 @@ class Ingest(commands.Cog):
             ephemeral=True,
         )
 
+        sources, notes = await self._load_sources(images)
         summary = await self._process_attachments(
-            images, kind, week_start, guild_id, channel_id
+            sources, kind, week_start, guild_id, channel_id, notes=notes
         )
         await self._send_long_followup(interaction, summary, ephemeral=True)
 
     @ingest.command(
+        name="zip",
+        description=f"OCR every image inside a .zip (up to {MAX_BATCH_IMAGES})",
+    )
+    @app_commands.describe(
+        archive=".zip file of screenshots",
+        dataset="Data type in the images",
+        week="Week start YYYY-MM-DD / current / last",
+    )
+    @app_commands.choices(dataset=DATASET_CHOICES)
+    async def ingest_zip(
+        self,
+        interaction: discord.Interaction,
+        archive: discord.Attachment,
+        dataset: app_commands.Choice[str] | None = None,
+        week: str | None = None,
+    ) -> None:
+        if not _is_zip_attachment(archive):
+            await interaction.response.send_message(
+                f"`{archive.filename}` isn't a .zip file. "
+                "Use `/ingest image` for individual screenshots.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild_id = guild_id_from_interaction(interaction)
+        channel_id = channel_id_from_interaction(interaction)
+        kind = dataset.value if dataset else "auto"
+        week_start = self._default_week(week, context="ingest_zip")
+
+        sources, notes = await self._load_sources([archive])
+        sources = self._cap_sources(sources)
+        if not sources:
+            detail = "\n".join(f"• {n}" for n in notes) or "No images found."
+            await interaction.followup.send(
+                f"Nothing to process from `{archive.filename}`.\n{detail}",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"Unpacked **{len(sources)}** image(s) from `{archive.filename}` "
+            f"for `{kind}` / `{week_start}`. Progress is posted in the channel.",
+            ephemeral=True,
+        )
+
+        # A regular channel message stays editable past the 15-minute
+        # interaction window, so long runs can keep reporting progress.
+        status: discord.Message | None = None
+        label = (
+            f"{interaction.user.mention} — OCR `{archive.filename}` "
+            f"({len(sources)} image(s), `{kind}` → `{week_start}`)"
+        )
+        channel = interaction.channel
+        if channel is not None and hasattr(channel, "send"):
+            try:
+                status = await channel.send(  # type: ignore[union-attr]
+                    f"{label}\nStarting…",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                status = None
+
+        summary = await self._process_attachments(
+            sources,
+            kind,
+            week_start,
+            guild_id,
+            channel_id,
+            progress=self._progress_editor(status, label) if status else None,
+            notes=notes,
+        )
+        if status is not None:
+            short = summary.split("\n\n", 1)[0]
+            try:
+                await status.edit(content=f"{label}\n{short}"[:1900])
+            except discord.HTTPException:
+                pass
+        await self._send_long_followup(interaction, summary, ephemeral=True)
+
+    @ingest.command(
         name="batch",
-        description=f"Collect up to {MAX_INGEST_IMAGES} images across messages, then OCR",
+        description=(
+            f"Collect images or .zip files across messages (up to "
+            f"{MAX_INGEST_IMAGES} images, {MAX_BATCH_IMAGES} with zips), then OCR"
+        ),
     )
     @app_commands.describe(
         dataset="Data type in the images",
@@ -397,9 +598,10 @@ class Ingest(commands.Cog):
         )
         await interaction.response.send_message(
             f"**Batch OCR armed** — `{kind}` → week `{week_start}`\n"
-            f"Send image messages in this channel (Discord max "
+            f"Send images or `.zip` files in this channel (Discord max "
             f"**{MAX_ATTACHMENTS_PER_MESSAGE}** files each).\n"
-            f"I'll queue up to **{MAX_INGEST_IMAGES}** images.\n"
+            f"I'll queue up to **{MAX_INGEST_IMAGES}** loose images, or "
+            f"**{MAX_BATCH_IMAGES}** in total once a zip is included.\n"
             f"Type `done` when finished (or wait until the cap / "
             f"{timeout_minutes} min timeout)."
         )
@@ -409,7 +611,13 @@ class Ingest(commands.Cog):
             await interaction.followup.send("No channel available for batch upload.")
             return
 
-        collected: list[discord.Attachment] = []
+        collected: list[ImageSource] = []
+        notes: list[str] = []
+
+        def cap() -> int:
+            if any(src.from_archive for src in collected):
+                return MAX_BATCH_IMAGES
+            return MAX_INGEST_IMAGES
 
         def check(message: discord.Message) -> bool:
             if message.author.id != interaction.user.id:
@@ -419,15 +627,10 @@ class Ingest(commands.Cog):
             content = (message.content or "").strip().lower()
             if content in {"done", "finish", "go", "process"}:
                 return True
-            return bool(
-                self._filter_images(
-                    list(message.attachments),
-                    limit=MAX_ATTACHMENTS_PER_MESSAGE,
-                )
-            )
+            return bool(self._filter_uploads(list(message.attachments)))
 
         deadline = asyncio.get_running_loop().time() + (timeout_minutes * 60)
-        while len(collected) < MAX_INGEST_IMAGES:
+        while len(collected) < cap():
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
@@ -439,12 +642,14 @@ class Ingest(commands.Cog):
                 break
 
             content = (message.content or "").strip().lower()
-            new_images = self._filter_images(
-                list(message.attachments),
-                limit=MAX_ATTACHMENTS_PER_MESSAGE,
+            new_sources, new_notes = await self._load_sources(
+                self._filter_uploads(list(message.attachments))
             )
+            notes.extend(new_notes)
             before = len(collected)
-            collected = self._merge_unique(collected, new_images)
+            collected = self._merge_sources(
+                collected, new_sources, limit=MAX_BATCH_IMAGES
+            )
             added = len(collected) - before
 
             if content in {"done", "finish", "go", "process"}:
@@ -454,13 +659,17 @@ class Ingest(commands.Cog):
                 await message.add_reaction("✅")
             except discord.HTTPException:
                 pass
+            dropped = len(new_sources) - added
+            extra = "\n".join(f"⚠️ {n}" for n in new_notes)
+            if dropped > 0:
+                extra += (
+                    f"\n⚠️ {dropped} image(s) not queued (duplicate or over the cap)."
+                )
             await interaction.followup.send(
                 f"Queued **{added}** image(s) "
-                f"(**{len(collected)}/{MAX_INGEST_IMAGES}** total).",
+                f"(**{len(collected)}/{cap()}** total).{extra}"[:1900],
                 ephemeral=True,
             )
-            if len(collected) >= MAX_INGEST_IMAGES:
-                break
 
         if not collected:
             await interaction.followup.send(
@@ -469,17 +678,34 @@ class Ingest(commands.Cog):
             )
             return
 
-        status = await interaction.followup.send(
-            f"Processing **{len(collected)}** queued image(s)…"
+        label = (
+            f"{interaction.user.mention} — batch OCR "
+            f"({len(collected)} image(s), `{kind}` → `{week_start}`)"
         )
-        summary = await self._process_attachments(
-            collected, kind, week_start, guild_id, channel_id
-        )
-        short = summary.split("\n\n", 1)[0]
+        # Channel message (not a follow-up) so it stays editable after the
+        # 15-minute interaction window.
         try:
-            await status.edit(content=short[:1900])
+            status: discord.Message | None = await channel.send(  # type: ignore[union-attr]
+                f"{label}\nStarting…",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except discord.HTTPException:
-            pass
+            status = None
+        summary = await self._process_attachments(
+            collected,
+            kind,
+            week_start,
+            guild_id,
+            channel_id,
+            progress=self._progress_editor(status, label) if status else None,
+            notes=notes,
+        )
+        if status is not None:
+            short = summary.split("\n\n", 1)[0]
+            try:
+                await status.edit(content=f"{label}\n{short}"[:1900])
+            except discord.HTTPException:
+                pass
         await self._send_long_followup(interaction, summary, ephemeral=True)
 
     @ingest.command(name="text", description="Ingest pasted CSV/text rows")
@@ -557,19 +783,22 @@ class Ingest(commands.Cog):
 
     async def _process_attachments(
         self,
-        images: list[discord.Attachment],
+        images: list[ImageSource],
         kind: str,
         week_start: str,
         guild_id: str,
         channel_id: str,
+        *,
+        progress: ProgressCallback | None = None,
+        notes: Sequence[str] = (),
     ) -> str:
         if not images:
             return "No images to process."
 
         truncated = ""
-        if len(images) > MAX_INGEST_IMAGES:
-            images = images[:MAX_INGEST_IMAGES]
-            truncated = f"\n_(Capped at {MAX_INGEST_IMAGES} images.)_"
+        if len(images) > MAX_BATCH_IMAGES:
+            images = images[:MAX_BATCH_IMAGES]
+            truncated = f"\n_(Capped at {MAX_BATCH_IMAGES} images.)_"
 
         engine = self._engine()
         engine_label = engine.engine_name
@@ -599,6 +828,8 @@ class Ingest(commands.Cog):
         players: set[str] = set()
 
         for index, image in enumerate(images, start=1):
+            if progress is not None:
+                await progress(index, len(images), image.filename)
             try:
                 detail, count, names = await self._process_attachment(
                     image, kind, week_start, guild_id, channel_id
@@ -635,9 +866,11 @@ class Ingest(commands.Cog):
             f"**{len(players)}** player name(s) from **{len(images)}** image(s)."
         )
         file_rollups = "\n".join(per_file)
+        note_lines = [f"⚠️ {n}" for n in notes]
         return "\n".join(
             header
-            + [summary_line, truncated, "", "**Per file:**", file_rollups, ""]
+            + [summary_line, truncated, *note_lines]
+            + ["", "**Per file:**", file_rollups, ""]
             + sections
         ).strip()
 
@@ -649,8 +882,22 @@ class Ingest(commands.Cog):
         ephemeral: bool = True,
     ) -> None:
         limit = 1900
+        # Interaction follow-ups stop working 15 minutes after the command; long
+        # batches fall back to plain channel messages addressed to the user.
+        fallback = interaction.channel if interaction.is_expired() else None
+        if fallback is not None and hasattr(fallback, "send"):
+            text = f"{interaction.user.mention} — your OCR results:\n{text}"
+
+        async def send(chunk: str) -> None:
+            if fallback is not None and hasattr(fallback, "send"):
+                await fallback.send(  # type: ignore[union-attr]
+                    chunk, allowed_mentions=discord.AllowedMentions(users=True)
+                )
+            else:
+                await interaction.followup.send(chunk, ephemeral=ephemeral)
+
         if len(text) <= limit:
-            await interaction.followup.send(text, ephemeral=ephemeral)
+            await send(text)
             return
         chunks: list[str] = []
         buf: list[str] = []
@@ -665,27 +912,23 @@ class Ingest(commands.Cog):
         if buf:
             chunks.append("".join(buf))
         for chunk in chunks[:8]:
-            await interaction.followup.send(chunk, ephemeral=ephemeral)
+            await send(chunk)
         if len(chunks) > 8:
-            await interaction.followup.send(
-                f"_…truncated {len(chunks) - 8} more chunk(s)._",
-                ephemeral=ephemeral,
-            )
+            await send(f"_…truncated {len(chunks) - 8} more chunk(s)._")
 
     async def _process_attachment(
         self,
-        attachment: discord.Attachment,
+        source: ImageSource,
         kind: str,
         week_start: str,
         guild_id: str,
         channel_id: str,
     ) -> tuple[str, int, set[str]]:
-        suffix = Path(attachment.filename).suffix or ".png"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=source.suffix, delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            await attachment.save(tmp_path)
+            await asyncio.to_thread(tmp_path.write_bytes, source.data)
             metric_override = {
                 "tech": "TechContribution",
                 "versus": "VersusPoints",
@@ -737,7 +980,7 @@ class Ingest(commands.Cog):
                 week_start,
                 guild_id,
                 channel_id,
-                attachment.filename,
+                source.filename,
             )
             return "\n".join(lines), count, names
         finally:
@@ -756,11 +999,8 @@ class Ingest(commands.Cog):
         if not message.attachments:
             return
 
-        images = self._filter_images(
-            list(message.attachments),
-            limit=MAX_ATTACHMENTS_PER_MESSAGE,
-        )
-        if not images:
+        uploads = self._filter_uploads(list(message.attachments))
+        if not uploads:
             return
 
         guild_id = str(message.guild.id)
@@ -779,22 +1019,27 @@ class Ingest(commands.Cog):
                     week = None
 
         week_start = week or self._default_week(None)
-        image_count_on_msg = len(
-            [a for a in message.attachments if _is_image_attachment(a)]
+        sources, notes = await self._load_sources(uploads)
+        sources = self._cap_sources(sources)
+        if not sources:
+            await message.reply("\n".join(notes) or "No images found.")
+            return
+        label = (
+            f"Processing **{len(sources)}** image(s) with OCR for week `{week_start}`"
         )
         status = await message.reply(
-            f"Processing **{len(images)}** image(s) with OCR for week `{week_start}`"
-            + (
-                f" (message had {image_count_on_msg}; Discord max "
-                f"{MAX_ATTACHMENTS_PER_MESSAGE}/message)"
-                if image_count_on_msg > len(images)
-                else ""
-            )
-            + "…\n"
-            + f"_For up to {MAX_INGEST_IMAGES} across several messages, use `/ingest batch`._"
+            f"{label}…\n"
+            f"_For more across several messages, use `/ingest batch` "
+            f"or upload a `.zip`._"
         )
         summary = await self._process_attachments(
-            images, kind, week_start, guild_id, msg_channel_id
+            sources,
+            kind,
+            week_start,
+            guild_id,
+            msg_channel_id,
+            progress=self._progress_editor(status, label),
+            notes=notes,
         )
         if len(summary) > 1900:
             summary = summary[:1900] + "\n…"
@@ -807,15 +1052,12 @@ class Ingest(commands.Cog):
         dataset: str = "auto",
         week: str | None = None,
     ) -> None:
-        """OCR attachments on this message (max 10). Usage: !ingestimage versus current"""
-        images = self._filter_images(
-            list(ctx.message.attachments),
-            limit=MAX_ATTACHMENTS_PER_MESSAGE,
-        )
-        if not images:
+        """OCR images or .zip files on this message. Usage: !ingestimage versus current"""
+        uploads = self._filter_uploads(list(ctx.message.attachments))
+        if not uploads:
             await ctx.reply(
-                f"Attach 1–{MAX_ATTACHMENTS_PER_MESSAGE} images to this message. "
-                f"For larger sets use `/ingest batch` (up to {MAX_INGEST_IMAGES})."
+                f"Attach 1–{MAX_ATTACHMENTS_PER_MESSAGE} images or a `.zip` to this "
+                f"message. For larger sets use `/ingest batch` or `/ingest zip`."
             )
             return
         kind = dataset.lower().strip()
@@ -825,11 +1067,21 @@ class Ingest(commands.Cog):
         guild_id = guild_id_from_context(ctx)
         channel_id = channel_id_from_context(ctx)
         week_start = self._default_week(week)
-        status = await ctx.reply(
-            f"Processing **{len(images)}** image(s) (`{kind}` → `{week_start}`)…"
-        )
+        sources, notes = await self._load_sources(uploads)
+        sources = self._cap_sources(sources)
+        if not sources:
+            await ctx.reply("\n".join(notes) or "No images found.")
+            return
+        label = f"Processing **{len(sources)}** image(s) (`{kind}` → `{week_start}`)"
+        status = await ctx.reply(f"{label}…")
         summary = await self._process_attachments(
-            images, kind, week_start, guild_id, channel_id
+            sources,
+            kind,
+            week_start,
+            guild_id,
+            channel_id,
+            progress=self._progress_editor(status, label),
+            notes=notes,
         )
         if len(summary) > 1900:
             summary = summary[:1900] + "\n…"

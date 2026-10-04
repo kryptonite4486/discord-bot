@@ -25,7 +25,8 @@ Add / Ingest
   /add tech         Add Tech Contribution for a player
   /add general      Add HQ Level and Power
   /ingest image     OCR up to 10 images on this command
-  /ingest batch     Collect up to 20 images across messages
+  /ingest zip       OCR every image in a .zip (up to 50)
+  /ingest batch     Collect images/zips across messages (20; 50 with zips)
   /ingest text      Ingest pasted CSV/text rows
 
 Reports
@@ -52,8 +53,9 @@ Help
 ```
 
 Week args accept `YYYY-MM-DD`, `current`, or `last` (normalized to Sunday).
-Discord allows ~10 attachments per message; use `/ingest batch` for larger sets.
-If `OCR_CHANNEL_ID` is set, images posted there are auto-ingested.
+Discord allows ~10 attachments per message; use `/ingest zip` or `/ingest batch`
+for larger sets. Zip uploads are bound by your server's file size limit.
+If `OCR_CHANNEL_ID` is set, images and .zip files posted there are auto-ingested.
 """
 
 
