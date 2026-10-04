@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bot.ocr.pipeline import OCREngine, extract_metrics_from_image  # noqa: E402
+from bot.ocr.pipeline import VisionOCR, extract_metrics_from_image  # noqa: E402
 from bot.ocr.vision import (  # noqa: E402
     _parse_json_rows,
     _prompt_for_kind,
@@ -86,42 +86,54 @@ class VisionJsonParseTests(unittest.TestCase):
                 self.assertIn('"65.4M"', prompt)
 
 
-class VisionEngineRoutingTests(unittest.TestCase):
-    def test_omlx_alias(self) -> None:
-        engine = OCREngine("omlx")
-        self.assertTrue(engine.is_vision)
-        self.assertEqual(engine.engine_name, "vision")
+_OCR = VisionOCR(
+    base_url="http://127.0.0.1:8000/v1",
+    model="Qwen2.5-VL-7B-Instruct",
+    timeout=30.0,
+)
 
-    def test_extract_routes_to_vision(self) -> None:
+
+class VisionRoutingTests(unittest.TestCase):
+    def test_extract_passes_connection_settings(self) -> None:
         fake = MagicMock()
-        fake.kind = "versus"
-        fake.metrics = []
-        fake.raw_text = "[]"
-        fake.warnings = []
-        engine = OCREngine(
-            "vision",
-            vision_base_url="http://127.0.0.1:8000/v1",
-            vision_model="Qwen2.5-VL-7B-Instruct",
-            vision_api_key="",
-            vision_timeout=30.0,
-        )
         with patch(
             "bot.ocr.vision.extract_metrics_via_vision", return_value=fake
         ) as mocked:
             result = extract_metrics_from_image(
-                "/tmp/does-not-matter.png",
-                kind="versus",
-                engine=engine,
+                "/tmp/does-not-matter.png", kind="versus", ocr=_OCR
             )
-        mocked.assert_called_once()
         self.assertIs(result, fake)
+        mocked.assert_called_once_with(
+            "/tmp/does-not-matter.png",
+            kind="versus",
+            base_url="http://127.0.0.1:8000/v1",
+            model="Qwen2.5-VL-7B-Instruct",
+            api_key="",
+            timeout=30.0,
+        )
 
     def test_unknown_kind_rejected(self) -> None:
         # Auto-detect was removed; callers must name the dataset.
         with self.assertRaises(ValueError):
             extract_metrics_from_image(
-                "/tmp/does-not-matter.png", kind="auto", engine=OCREngine("omlx")  # type: ignore[arg-type]
+                "/tmp/does-not-matter.png", kind="auto", ocr=_OCR  # type: ignore[arg-type]
             )
+
+    def test_label(self) -> None:
+        self.assertEqual(_OCR.label, "vision/Qwen2.5-VL-7B-Instruct")
+
+
+class OcrEngineSettingTests(unittest.TestCase):
+    def test_stale_engine_rejected(self) -> None:
+        from bot.config import _check_ocr_engine
+
+        for value in ("easyocr", "tesseract"):
+            with self.subTest(value=value), patch.dict("os.environ", {"OCR_ENGINE": value}):
+                with self.assertRaises(RuntimeError):
+                    _check_ocr_engine()
+        for value in ("", "vision", "omlx"):
+            with self.subTest(value=value), patch.dict("os.environ", {"OCR_ENGINE": value}):
+                _check_ocr_engine()
 
 
 if __name__ == "__main__":

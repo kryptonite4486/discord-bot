@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import DATASET_KINDS, resolve_metric
-from bot.ocr import OCREngine, extract_metrics_from_image
+from bot.ocr import VisionOCR, extract_metrics_from_image
 from bot.utils.archive import (
     MAX_ZIP_IMAGES,
     ArchiveError,
@@ -78,28 +78,13 @@ class Ingest(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._ocr_engine: OCREngine | None = None
-
-    def _engine(self) -> OCREngine:
-        if self._ocr_engine is None:
-            s = self.bot.settings
-            log.info(
-                "Initializing OCR engine=%s%s",
-                s.ocr_engine,
-                (
-                    f" model={s.ocr_vision_model} url={s.ocr_vision_base_url}"
-                    if s.ocr_engine == "vision"
-                    else ""
-                ),
-            )
-            self._ocr_engine = OCREngine(
-                s.ocr_engine,
-                vision_base_url=s.ocr_vision_base_url,
-                vision_model=s.ocr_vision_model,
-                vision_api_key=s.ocr_vision_api_key,
-                vision_timeout=s.ocr_vision_timeout,
-            )
-        return self._ocr_engine
+        s = bot.settings
+        self._ocr = VisionOCR(
+            base_url=s.ocr_vision_base_url,
+            model=s.ocr_vision_model,
+            api_key=s.ocr_vision_api_key,
+            timeout=s.ocr_vision_timeout,
+        )
 
     def _default_week(self, week: str | None, *, context: str = "ingest") -> str:
         if week:
@@ -819,10 +804,7 @@ class Ingest(commands.Cog):
             images = images[:MAX_BATCH_IMAGES]
             truncated = f"\n_(Capped at {MAX_BATCH_IMAGES} images.)_"
 
-        engine = self._engine()
-        engine_label = engine.engine_name
-        if engine.is_vision:
-            engine_label = f"vision/{engine.vision_model}"
+        engine_label = self._ocr.label
 
         log.info(
             "OCR batch start: %d image(s) engine=%s kind=%s week=%s "
@@ -871,16 +853,10 @@ class Ingest(commands.Cog):
                 )
             except Exception as exc:
                 log.exception("OCR ingest failed for %s", image.filename)
-                engine = self._engine()
-                engine_tag = (
-                    f"vision/{engine.vision_model}"
-                    if engine.is_vision
-                    else engine.engine_name
-                )
-                per_file.append(f"• `{image.filename}` — **failed** ({engine_tag})")
+                per_file.append(f"• `{image.filename}` — **failed** ({engine_label})")
                 sections.append(
                     f"### {index}/{len(images)} — `{image.filename}`\n"
-                    f"**OCR failed** (`{engine_tag}`): `{exc}`"
+                    f"**OCR failed** (`{engine_label}`): `{exc}`"
                 )
 
         summary_line = (
@@ -955,14 +931,7 @@ class Ingest(commands.Cog):
                 extract_metrics_from_image,
                 tmp_path,
                 kind=kind,  # type: ignore[arg-type]
-                engine=self._engine(),
-            )
-
-            engine = self._engine()
-            engine_tag = (
-                f"vision/{engine.vision_model}"
-                if engine.is_vision
-                else engine.engine_name
+                ocr=self._ocr,
             )
 
             payload = [
@@ -994,7 +963,7 @@ class Ingest(commands.Cog):
             names = {m.player_name for m in result.metrics}
 
             lines = [
-                f"**OCR ingest complete** (`{engine_tag}` / `{result.kind}` → week `{week_start}`)",
+                f"**OCR ingest complete** (`{self._ocr.label}` / `{result.kind}` → week `{week_start}`)",
                 f"Saved **{count}** metric row(s) from **{len(names)}** player(s).",
                 *(f"🚩 {a}" for a in alerts),
                 "",

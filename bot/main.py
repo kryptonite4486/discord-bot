@@ -171,15 +171,12 @@ async def amain() -> None:
     settings = Settings.from_env()
     setup_logging(settings.log_level)
     log.info("Starting Weekly Metrics Bot v%s", __version__)
-    if settings.ocr_engine == "vision":
-        log.info(
-            "OCR engine=vision model=%s base_url=%s timeout=%.0fs",
-            settings.ocr_vision_model,
-            settings.ocr_vision_base_url,
-            settings.ocr_vision_timeout,
-        )
-    else:
-        log.info("OCR engine=%s", settings.ocr_engine)
+    log.info(
+        "OCR vision model=%s base_url=%s timeout=%.0fs",
+        settings.ocr_vision_model,
+        settings.ocr_vision_base_url,
+        settings.ocr_vision_timeout,
+    )
 
     bot = WeeklyMetricsBot(settings)
     # Prefer Bot.on_app_command_error when present; also bind tree for compatibility.

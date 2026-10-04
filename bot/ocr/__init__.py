@@ -1,11 +1,11 @@
 """OCR package."""
 
-from bot.ocr.pipeline import OCREngine, OCRResult, ExtractedMetric, extract_metrics_from_image
+from bot.ocr.pipeline import ExtractedMetric, OCRResult, VisionOCR, extract_metrics_from_image
 
 __all__ = [
-    "OCREngine",
-    "OCRResult",
     "ExtractedMetric",
+    "OCRResult",
+    "VisionOCR",
     "extract_metrics_from_image",
     "extract_metrics_via_vision",
 ]

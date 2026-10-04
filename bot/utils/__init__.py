@@ -27,7 +27,6 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("discord.http").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("PIL").setLevel(logging.WARNING)
-    logging.getLogger("easyocr").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

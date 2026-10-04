@@ -1,11 +1,8 @@
 """Sample screenshots through the configured vision model (the production OCR path).
 
-Opt-in because each image is a real model call:
-
-    RUN_VISION_TESTS=1 .venv/bin/python -m unittest tests.test_vision_samples -v
-
-Uses OCR_VISION_* from .env. Skips when RUN_VISION_TESTS is unset or the
-server is unreachable.
+Runs with the normal suite, using OCR_VISION_* from .env, so tests exercise the
+same model and prompts as the deployed bot. Skips (with a reason) when the
+server is unreachable; set RUN_VISION_TESTS=0 to skip deliberately.
 """
 
 from __future__ import annotations
@@ -21,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bot.config import Settings  # noqa: E402  (also loads .env)
+from bot.config import load_vision_env  # noqa: E402  (also loads .env)
+from bot.ocr.pipeline import VisionOCR, extract_metrics_from_image  # noqa: E402
 
 SAMPLES = ROOT / "samples"
 
@@ -54,28 +52,26 @@ def _server_reachable(base_url: str, api_key: str) -> bool:
     return True
 
 
-_SETTINGS = Settings.from_env()
-_BASE_URL = _base_url(_SETTINGS.ocr_vision_base_url)
-_ENABLED = os.getenv("RUN_VISION_TESTS", "").strip() in {"1", "true", "yes"}
+_base, _model, _api_key, _timeout = load_vision_env()
+_OCR = VisionOCR(
+    base_url=_base_url(_base), model=_model, api_key=_api_key, timeout=_timeout
+)
+_DISABLED = os.getenv("RUN_VISION_TESTS", "").strip().lower() in {"0", "false", "no"}
 
 
-@unittest.skipUnless(_ENABLED, "set RUN_VISION_TESTS=1 to call the vision model")
+@unittest.skipIf(_DISABLED, "RUN_VISION_TESTS=0")
 class VisionSampleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if not _server_reachable(_BASE_URL, _SETTINGS.ocr_vision_api_key):
-            raise unittest.SkipTest(f"vision server not reachable at {_BASE_URL}")
+        if not _server_reachable(_OCR.base_url, _OCR.api_key):
+            raise unittest.SkipTest(f"vision server not reachable at {_OCR.base_url}")
 
     def _extract(self, filename: str, kind: str):
-        from bot.ocr.vision import extract_metrics_via_vision
-
-        result = extract_metrics_via_vision(
+        # Same entry point the bot's ingest path uses.
+        result = extract_metrics_from_image(
             SAMPLES / filename,
             kind=kind,  # type: ignore[arg-type]
-            base_url=_BASE_URL,
-            model=_SETTINGS.ocr_vision_model,
-            api_key=_SETTINGS.ocr_vision_api_key,
-            timeout=_SETTINGS.ocr_vision_timeout,
+            ocr=_OCR,
         )
         self.assertEqual(result.warnings, [], result.raw_text)
         return result

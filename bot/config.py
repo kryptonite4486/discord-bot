@@ -25,7 +25,33 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-_OCR_ENGINES = frozenset({"easyocr", "tesseract", "vision", "omlx"})
+def _check_ocr_engine() -> None:
+    """OCR is vision-only; reject stale OCR_ENGINE values instead of ignoring them."""
+    raw = os.getenv("OCR_ENGINE", "").strip().lower()
+    if raw and raw not in {"vision", "omlx"}:
+        raise RuntimeError(
+            f"OCR_ENGINE={raw!r} is no longer supported; OCR always uses the vision "
+            "model (OCR_VISION_*). Remove OCR_ENGINE from .env or set it to 'vision'."
+        )
+
+
+def load_vision_env() -> tuple[str, str, str, float]:
+    """(base_url, model, api_key, timeout) from OCR_VISION_* variables."""
+    timeout_raw = os.getenv("OCR_VISION_TIMEOUT", "120").strip() or "120"
+    try:
+        timeout = float(timeout_raw)
+    except ValueError:
+        timeout = 120.0
+    base_url = (
+        os.getenv("OCR_VISION_BASE_URL", "http://127.0.0.1:8000/v1").strip()
+        or "http://127.0.0.1:8000/v1"
+    )
+    model = (
+        os.getenv("OCR_VISION_MODEL", "Qwen2.5-VL-7B-Instruct-4bit").strip()
+        or "Qwen2.5-VL-7B-Instruct-4bit"
+    )
+    api_key = os.getenv("OCR_VISION_API_KEY", "").strip()
+    return base_url, model, api_key, timeout
 
 
 @dataclass(frozen=True)
@@ -34,7 +60,6 @@ class Settings:
     command_prefix: str
     database_path: Path
     ocr_channel_id: int | None
-    ocr_engine: str
     ocr_vision_base_url: str
     ocr_vision_model: str
     ocr_vision_api_key: str
@@ -56,39 +81,17 @@ class Settings:
 
         db_path = Path(os.getenv("DATABASE_PATH", "/app/data/weekly.db"))
         default_week = os.getenv("DEFAULT_WEEK_START", "").strip() or None
-        raw_engine = os.getenv("OCR_ENGINE", "easyocr").strip().lower() or "easyocr"
-        engine = "vision" if raw_engine == "omlx" else raw_engine
-        # Never silently remap unknown engines (e.g. vision→easyocr hid misconfigured deploys).
-        if engine not in _OCR_ENGINES:
-            raise RuntimeError(
-                f"Invalid OCR_ENGINE={raw_engine!r}. "
-                f"Expected one of: easyocr, tesseract, vision (alias: omlx)."
-            )
-
-        timeout_raw = os.getenv("OCR_VISION_TIMEOUT", "120").strip() or "120"
-        try:
-            vision_timeout = float(timeout_raw)
-        except ValueError:
-            vision_timeout = 120.0
-
-        vision_base = (
-            os.getenv("OCR_VISION_BASE_URL", "http://127.0.0.1:8000/v1").strip()
-            or "http://127.0.0.1:8000/v1"
-        )
-        vision_model = (
-            os.getenv("OCR_VISION_MODEL", "Qwen2.5-VL-7B-Instruct-4bit").strip()
-            or "Qwen2.5-VL-7B-Instruct-4bit"
-        )
+        _check_ocr_engine()
+        vision_base, vision_model, vision_api_key, vision_timeout = load_vision_env()
 
         return cls(
             discord_token=token,
             command_prefix=os.getenv("COMMAND_PREFIX", "!").strip() or "!",
             database_path=db_path,
             ocr_channel_id=_optional_int("OCR_CHANNEL_ID"),
-            ocr_engine=engine,
             ocr_vision_base_url=vision_base,
             ocr_vision_model=vision_model,
-            ocr_vision_api_key=os.getenv("OCR_VISION_API_KEY", "").strip(),
+            ocr_vision_api_key=vision_api_key,
             ocr_vision_timeout=vision_timeout,
             default_week_start=default_week,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

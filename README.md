@@ -42,11 +42,9 @@ export DATABASE_PATH=./data/weekly.db
 python -m bot.main
 ```
 
-Tesseract must be installed on the host if `OCR_ENGINE=tesseract`. EasyOCR downloads models on first use.
-
 ### Vision OCR (oMLX / Qwen2.5-VL)
 
-Set `OCR_ENGINE=vision` to use a local OpenAI-compatible vision server (e.g. oMLX) instead of EasyOCR/Tesseract:
+Screenshots are read by a local OpenAI-compatible vision server (e.g. oMLX). This is the only OCR engine; `OCR_ENGINE` is no longer needed, and values other than `vision` are rejected at startup.
 
 | Variable | Default | Notes |
 |----------|---------|--------|
@@ -60,8 +58,6 @@ Set `OCR_ENGINE=vision` to use a local OpenAI-compatible vision server (e.g. oML
 ```bash
 docker compose up --build -d
 ```
-
-Slash commands `/ingest image`, `/ingest zip` and `/ingest batch` are unchanged — only the OCR backend switches.
 
 ## Commands
 
@@ -178,15 +174,7 @@ Fresh databases skip migration and create the new schema directly.
 python -m unittest discover -s tests
 ```
 
-Unit tests need no network. The EasyOCR sample tests run only when `easyocr` and `cv2` are installed.
-
-The sample screenshots in `samples/` can also be checked against the configured vision model, which is the production OCR path. These tests are opt-in because each image is a real model call:
-
-```bash
-RUN_VISION_TESTS=1 python -m unittest tests.test_vision_samples -v
-```
-
-They read `OCR_VISION_*` from `.env`, swap `host.docker.internal` for `127.0.0.1` when run outside Docker (or set `OCR_VISION_TEST_BASE_URL`), and skip if the server is unreachable.
+The suite includes `tests/test_vision_samples.py`, which runs every screenshot in `samples/` through the configured vision model (the same entry point and prompts the bot uses) and checks the extracted names and values. It reads `OCR_VISION_*` from `.env` and swaps `host.docker.internal` for `127.0.0.1` when run outside Docker (or set `OCR_VISION_TEST_BASE_URL`). If the server is unreachable those tests are skipped with a reason; set `RUN_VISION_TESTS=0` to skip them deliberately. Everything else runs offline.
 
 ## Project layout
 
@@ -196,7 +184,7 @@ bot/
   config.py         # env settings
   cogs/             # admin, ingest, reports
   db/               # SQLite helpers
-  ocr/              # EasyOCR / Tesseract / vision (oMLX) pipeline
+  ocr/              # Vision-model OCR (oMLX) and response parsing
   reporting/        # markdown + matplotlib
   utils/            # logging, parsing
 data/               # persistent volume (weekly.db)

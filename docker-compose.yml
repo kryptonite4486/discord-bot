@@ -10,14 +10,9 @@ services:
       # Live-mount app code so host edits apply without a full image rebuild.
       # /admin reload picks up cog changes; restart for main/config changes.
       - ./bot:/app/bot
-      - easyocr-cache:/app/.EasyOCR
     environment:
       - DATABASE_PATH=/app/data/weekly.db
-      - EASYOCR_MODULE_PATH=/app/.EasyOCR
     # Reach oMLX / other services on the Mac host (Docker Desktop provides
     # host.docker.internal; host-gateway covers Linux Compose as well).
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-volumes:
-  easyocr-cache:
