@@ -18,6 +18,12 @@ def _optional_int(name: str) -> int | None:
     return int(raw)
 
 
+def _int_set(name: str) -> frozenset[int]:
+    """Comma- or space-separated Discord IDs."""
+    raw = os.getenv(name, "").replace(",", " ").split()
+    return frozenset(int(part) for part in raw)
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name, "").strip().lower()
     if not raw:
@@ -70,6 +76,8 @@ class Settings:
     default_week_start: str | None
     log_level: str
     dev_guild_id: int | None
+    control_guild_id: int | None
+    bot_owner_ids: frozenset[int]
     legacy_guild_id: str | None
     app_id: int | None
     message_content_intent: bool
@@ -105,6 +113,8 @@ class Settings:
             default_week_start=default_week,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             dev_guild_id=_optional_int("DEV_GUILD_ID"),
+            control_guild_id=_optional_int("CONTROL_GUILD_ID"),
+            bot_owner_ids=_int_set("BOT_OWNER_IDS"),
             legacy_guild_id=(
                 os.getenv("LEGACY_GUILD_ID", "").strip() or None
             ),

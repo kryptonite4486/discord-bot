@@ -21,7 +21,7 @@ The bot already keeps each server's data separate (`GuildId` + `ChannelId` on ev
 These are gaps that must be closed before or alongside charging money. **P0** means blocking.
 
 ### P0: safety and multi-tenancy
-1. **Split operator and server-admin permissions.** Add `BOT_OWNER_IDS` (or use the application owner/team). Move `reload`, `sync all/global`, `backup` and all entitlement commands into an owner-only `/ops` group. Sync that group **only** to a private control server (`CONTROL_GUILD_ID`) so it never shows up in customer servers, and check owner identity again inside every handler.
+1. ✅ *Done 2026-10-05.* **Split operator and server-admin permissions.** Add `BOT_OWNER_IDS` (or use the application owner/team). Move `reload`, `sync all/global`, `backup` and all entitlement commands into an owner-only `/ops` group. Sync that group **only** to a private control server (`CONTROL_GUILD_ID`) so it never shows up in customer servers, and check owner identity again inside every handler.
 2. **Per-server settings table** (`GuildSettings`): default week, locale, and a "report channel" for scheduled posts and gift notices. Add a `/setup` command for server admins.
 3. **Usage metering** (`UsageLedger`): one row per OCR image per guild per week, recorded when the job is queued and adjusted if it fails. This drives quotas and tells you your real costs.
 4. **Fair OCR queue.** Replace the single FIFO semaphore with per-guild queues and a scheduler that serves guilds round-robin, with a priority lane for paid tiers. Otherwise one free server's 50-image zip blocks a paying customer.

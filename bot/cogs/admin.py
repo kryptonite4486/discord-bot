@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
 import logging
-import sys
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -12,7 +10,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from bot.utils.backup import create_backup, last_backup_time
-from bot.utils.command_sync import clear_guild_copies, sync_dev_guild, sync_global
 from bot.utils.names import group_variants
 from bot.utils.parsing import chunk_message
 from bot.utils.guild import (
@@ -28,66 +25,6 @@ SCOPE_CHOICES = [
     app_commands.Choice(name="This channel", value="channel"),
     app_commands.Choice(name="Entire server", value="server"),
 ]
-
-# Cog reload alone does not refresh already-imported helpers. Reload deps in
-# dependency order (leaves first) so formatters pick up a fresh format_value.
-_RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
-    "bot.cogs.reports": (
-        "bot.db.database",
-        "bot.utils.parsing",
-        "bot.utils.guild",
-        "bot.reporting.formatters",
-        "bot.reporting.charts",
-        "bot.reporting",
-    ),
-    "bot.cogs.ingest": (
-        "bot.db.database",
-        "bot.utils.parsing",
-        "bot.ocr.vision",
-        "bot.ocr.pipeline",
-        "bot.ocr",
-    ),
-    "bot.cogs.help_cmd": (
-        "bot.utils.parsing",
-    ),
-    "bot.cogs.admin": (
-        "bot.db.database",
-        "bot.utils.guild",
-        "bot.utils.backup",
-        "bot.utils.names",
-        "bot.utils.parsing",
-    ),
-}
-
-
-def _rebind_database(bot: commands.Bot) -> None:
-    """Point the live Database instance at the reloaded class.
-
-    importlib.reload updates the module, but bot.db remains an instance of the
-    previous class — method lookup would keep serving stale SQL otherwise.
-    """
-    mod = sys.modules.get("bot.db.database")
-    db = getattr(bot, "db", None)
-    if mod is None or db is None or not hasattr(mod, "Database"):
-        return
-    db.__class__ = mod.Database
-    pkg = sys.modules.get("bot.db")
-    if pkg is not None:
-        pkg.Database = mod.Database
-
-
-def _reload_dependencies(extension: str, bot: commands.Bot | None = None) -> list[str]:
-    refreshed: list[str] = []
-    for name in _RELOAD_DEPENDENCIES.get(extension, ()):
-        mod = sys.modules.get(name)
-        if mod is None:
-            continue
-        importlib.reload(mod)
-        refreshed.append(name)
-        if name == "bot.db.database" and bot is not None:
-            _rebind_database(bot)
-    return refreshed
-
 
 BACKUP_INTERVAL = timedelta(hours=24)
 
@@ -137,31 +74,8 @@ def format_variant_report(
     return "\n".join(lines)
 
 
-async def run_command_sync(
-    bot: commands.Bot, guilds: list[discord.Guild]
-) -> str:
-    """Register commands globally and remove duplicate per-server copies.
-
-    With DEV_GUILD_ID set, only the dev server is synced (instant updates).
-    """
-    dev_id = bot.settings.dev_guild_id
-    if dev_id:
-        count = await sync_dev_guild(bot.tree, dev_id)
-        return f"Synced **{count}** commands to the dev server only (`DEV_GUILD_ID`)."
-    count = await sync_global(bot.tree)
-    lines = [
-        f"Synced **{count}** global commands (changes can take a few minutes to "
-        "appear; restart Discord if they don't)."
-    ]
-    cleared = await clear_guild_copies(bot.tree, guilds)
-    if cleared:
-        names = ", ".join(f"**{g.name}**" for g in cleared)
-        lines.append(f"Removed duplicate command copies from {names}.")
-    return "\n".join(lines)
-
-
 class Admin(commands.Cog):
-    """Bot administration: reload, sync, stats, backups."""
+    """Server administration: stats and player-name cleanup, plus the daily backup."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -343,94 +257,6 @@ class Admin(commands.Cog):
     ) -> list[app_commands.Choice[str]]:
         return await self._player_autocomplete(interaction, current)
 
-    @admin.command(
-        name="backup",
-        description="Write a database backup to the host backup folder now",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def backup(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if not getattr(self.bot, "backups_enabled", False):
-            await interaction.followup.send(
-                "Backups are disabled: no backup folder is mounted "
-                "(set `BOT_BACKUP_DIR` in .env). Check the bot logs.",
-                ephemeral=True,
-            )
-            return
-        settings = self.bot.settings
-        try:
-            path = await create_backup(
-                self.bot.db, settings.backup_dir, "manual", keep=settings.backup_keep
-            )
-        except Exception as exc:
-            log.exception("Manual database backup failed")
-            await interaction.followup.send(f"Backup failed: `{exc}`", ephemeral=True)
-            return
-        log.info("Manual backup %s by %s", path.name, interaction.user)
-        await interaction.followup.send(
-            f"Backup saved on the host as `{path.name}` "
-            f"({path.stat().st_size / 1024:,.0f} KB).",
-            ephemeral=True,
-        )
-
-    @admin.command(name="reload", description="Reload a cog module")
-    @app_commands.describe(cog="Cog module name, e.g. ingest or reports")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def reload(self, interaction: discord.Interaction, cog: str) -> None:
-        await interaction.response.defer(ephemeral=True)
-        module = cog if cog.startswith("bot.cogs.") else f"bot.cogs.{cog}"
-        try:
-            deps = _reload_dependencies(module, self.bot)
-            await self.bot.reload_extension(module)
-        except commands.ExtensionNotLoaded:
-            deps = _reload_dependencies(module, self.bot)
-            await self.bot.load_extension(module)
-        except Exception as exc:
-            log.exception("Failed to reload %s", module)
-            await interaction.followup.send(f"Reload failed: `{exc}`", ephemeral=True)
-            return
-        log.info(
-            "Reloaded extension %s (deps=%s) by %s",
-            module,
-            deps,
-            interaction.user,
-        )
-        extra = f" (also reloaded: {', '.join(deps)})" if deps else ""
-        await interaction.followup.send(
-            f"Reloaded `{module}`{extra}.",
-            ephemeral=True,
-        )
-
-    @admin.command(name="sync", description="Sync slash commands with Discord")
-    @app_commands.describe(
-        scope="Which servers to clean of duplicate command copies (commands themselves are global)",
-    )
-    @app_commands.choices(
-        scope=[
-            app_commands.Choice(name="This server", value="guild"),
-            app_commands.Choice(name="All servers the bot is in", value="all"),
-        ]
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync(
-        self,
-        interaction: discord.Interaction,
-        scope: app_commands.Choice[str] | None = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        assert guild is not None
-        mode = scope.value if scope else "guild"
-        guilds = list(self.bot.guilds) if mode == "all" else [guild]
-        try:
-            msg = await run_command_sync(self.bot, guilds)
-        except Exception as exc:
-            log.exception("Command sync failed")
-            await interaction.followup.send(f"Sync failed: `{exc}`", ephemeral=True)
-            return
-        log.info("Synced commands mode=%s by %s", mode, interaction.user)
-        await interaction.followup.send(msg, ephemeral=True)
-
     @admin.command(name="stats", description="Show datastore statistics for this channel")
     @app_commands.describe(
         scope="This channel (default) or entire server",
@@ -504,11 +330,8 @@ class Admin(commands.Cog):
                 inline=False,
             )
         embed.add_field(name="By Metric", value=by_metric, inline=False)
-        embed.set_footer(text=stats["path"])
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @reload.error
-    @sync.error
     @stats.error
     async def admin_error(
         self,
@@ -528,29 +351,6 @@ class Admin(commands.Cog):
             await interaction.followup.send(text, ephemeral=True)
         else:
             await interaction.response.send_message(text, ephemeral=True)
-
-    # Prefix fallbacks — reload/sync require Administrator; dbstats does not.
-    @commands.command(name="reload")
-    @commands.has_permissions(administrator=True)
-    async def reload_prefix(self, ctx: commands.Context, cog: str) -> None:
-        module = cog if cog.startswith("bot.cogs.") else f"bot.cogs.{cog}"
-        deps = _reload_dependencies(module, self.bot)
-        try:
-            await self.bot.reload_extension(module)
-        except commands.ExtensionNotLoaded:
-            await self.bot.load_extension(module)
-        extra = f" (also reloaded: {', '.join(deps)})" if deps else ""
-        await ctx.reply(f"Reloaded `{module}`{extra}.")
-
-    @commands.command(name="sync")
-    @commands.has_permissions(administrator=True)
-    async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
-        """Sync slash commands. Usage: !sync [guild|all] — all also cleans duplicate copies in every server."""
-        assert ctx.guild is not None
-        mode = (scope or "guild").strip().lower()
-        all_guilds = mode in {"all", "every", "guilds"}
-        guilds = list(self.bot.guilds) if all_guilds else [ctx.guild]
-        await ctx.reply(await run_command_sync(self.bot, guilds))
 
     @commands.command(name="dbstats")
     async def stats_prefix(self, ctx: commands.Context, scope: str = "channel") -> None:

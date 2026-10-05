@@ -13,7 +13,7 @@ from bot import __version__
 from bot.config import Settings
 from bot.db import Database
 from bot.utils import setup_logging
-from bot.utils.command_sync import clear_guild_copies, sync_dev_guild, sync_global
+from bot.utils.command_sync import sync_commands
 from bot.utils.guild import reject_dm_context, reject_dm_interaction
 from bot.utils.storage import check_persistent_paths
 
@@ -23,6 +23,7 @@ COGS = (
     "bot.cogs.admin",
     "bot.cogs.help_cmd",
     "bot.cogs.ingest",
+    "bot.cogs.ops",
     "bot.cogs.planner",
     "bot.cogs.reports",
 )
@@ -85,17 +86,6 @@ class WeeklyMetricsBot(commands.Bot):
             await self.load_extension(ext)
             log.info("Loaded extension %s", ext)
 
-        # DEV_GUILD_ID: commands go to that server only, so edits show up
-        # instantly. Otherwise they are registered globally in on_ready.
-        if self.settings.dev_guild_id:
-            count = await sync_dev_guild(self.tree, self.settings.dev_guild_id)
-            log.info(
-                "Synced %d commands to dev guild %s", count, self.settings.dev_guild_id
-            )
-            self._commands_synced = True
-        else:
-            log.info("Deferring global slash sync until on_ready")
-
     async def on_ready(self) -> None:
         user = self.user
         log.info(
@@ -106,14 +96,19 @@ class WeeklyMetricsBot(commands.Bot):
             len(self.guilds),
         )
         if not self._commands_synced:
+            # Global commands everywhere, /ops in the control server only, and
+            # leftover per-server copies removed. DEV_GUILD_ID: that server only.
             try:
-                count = await sync_global(self.tree)
-                log.info("Synced %d global application commands", count)
+                result = await sync_commands(
+                    self.tree,
+                    list(self.guilds),
+                    dev_guild_id=self.settings.dev_guild_id,
+                    control_guild_id=self.settings.control_guild_id,
+                )
+                for line in result.summary().splitlines():
+                    log.info("Command sync: %s", line.replace("**", ""))
             except Exception:
-                log.exception("Failed to sync global application commands")
-            cleared = await clear_guild_copies(self.tree, list(self.guilds))
-            for g in cleared:
-                log.info("Removed duplicate guild commands from %s (%s)", g.name, g.id)
+                log.exception("Failed to sync application commands")
             self._commands_synced = True
         await self.change_presence(
             activity=discord.Activity(

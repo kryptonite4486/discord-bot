@@ -4,7 +4,7 @@ Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Te
 
 ## Features
 
-- Slash + prefix commands via cogs (`admin`, `ingest`, `reports`)
+- Slash + prefix commands via cogs (`admin`, `ingest`, `ops`, `reports`)
 - Message Content intent for prefix commands and `/ingest batch`
 - SQLite fact table `WeeklyMetrics` at `/app/data/weekly.db`, **partitioned per Discord server** (`GuildId`)
 - Manual `/add`, pasted CSV/text `/ingest text`, OCR `/ingest image` / `/ingest zip` / `/ingest batch`
@@ -42,7 +42,7 @@ Runtime data lives **outside the repo**, so deleting or re-cloning the code neve
 
 `docker-compose.yml` refuses to start if either variable is unset. Inside the container, the bot also refuses to start if `/app/data` isn't a mounted folder (override with `ALLOW_UNMOUNTED_DATA=1`), and disables backups if `/app/backups` isn't mounted.
 
-**Backups.** The bot writes `weekly-YYYYMMDD-HHMMSS-daily.db` once a day (checked hourly, so restarts or a sleeping Mac delay it by at most an hour) and keeps the newest `BACKUP_KEEP` (default 14). `/admin backup` writes a `-manual.db` copy on demand; the newest 10 are kept. Backups go through SQLite's `VACUUM INTO`, so they're consistent even while the bot is writing, and appear only once complete. Timestamps are UTC.
+**Backups.** The bot writes `weekly-YYYYMMDD-HHMMSS-daily.db` once a day (checked hourly, so restarts or a sleeping Mac delay it by at most an hour) and keeps the newest `BACKUP_KEEP` (default 14). `/ops backup` (operator only) writes a `-manual.db` copy on demand; the newest 10 are kept. Backups go through SQLite's `VACUUM INTO`, so they're consistent even while the bot is writing, and appear only once complete. Timestamps are UTC.
 
 **Don't open or copy the live `weekly.db` from the Mac while the bot is running.** The database uses WAL mode, whose locking doesn't work across Docker Desktop's VM boundary, and a plain copy can miss recent writes. Open a backup instead, or stop the bot first.
 
@@ -89,12 +89,23 @@ docker compose up --build -d
 
 ## Commands
 
-### Admin
+### Admin (server administrators; affects only this server)
 | Command | Description |
 |---------|-------------|
-| `/admin reload <cog>` | Reload a cog |
-| `/admin sync [scope]` | Register slash commands globally and remove duplicate per-server copies (this server, or all servers) |
 | `/admin stats` | Datastore stats |
+| `/admin duplicates` | List player names stored under several spellings |
+| `/admin rename-player` | Move a player's rows to the correct spelling |
+
+### Operator (`/ops`)
+These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and the `/ops` group appears only in the private `CONTROL_GUILD_ID` server. If either variable is unset, `/ops` is disabled.
+
+| Command | Description |
+|---------|-------------|
+| `/ops reload <cog>` | Reload a cog |
+| `/ops sync` | Register commands globally, `/ops` in the control server, and remove duplicate per-server copies everywhere |
+| `/ops backup` | Write a database backup now |
+
+`!reload <cog>` and `!sync` do the same from any server, for operators only.
 
 ### Ingestion
 | Command | Description |
@@ -212,7 +223,7 @@ The suite includes `tests/test_vision_samples.py`, which runs every screenshot i
 bot/
   main.py           # entrypoint
   config.py         # env settings
-  cogs/             # admin, help, ingest, planner, reports
+  cogs/             # admin, help, ingest, ops, planner, reports
   db/               # SQLite helpers
   ocr/              # Vision-model OCR (oMLX) and response parsing
   reporting/        # markdown + matplotlib
@@ -229,4 +240,4 @@ docker-compose.yml
 3. Privileged Gateway Intent: **Message Content Intent** = ON
 4. OAuth2 URL Generator: scopes `bot` + `applications.commands`
 5. Permissions: Send Messages, Embed Links, Attach Files, Read Message History, Use Application Commands
-6. Commands register globally on every start. If they are missing or listed twice, run `/admin sync` (or `!sync all`). Set `DEV_GUILD_ID` only on a development bot: commands then go to that one server instead, for instant updates
+6. Commands register globally on every start. If they are missing or listed twice, run `/ops sync` in the control server (or `!sync` anywhere, operator only). Set `DEV_GUILD_ID` only on a development bot: commands then go to that one server instead, for instant updates

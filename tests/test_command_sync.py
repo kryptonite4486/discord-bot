@@ -12,9 +12,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import discord  # noqa: E402
+from discord.ext import commands  # noqa: E402
 
-from bot.cogs.admin import run_command_sync  # noqa: E402
-from bot.utils.command_sync import clear_guild_copies  # noqa: E402
+from bot.cogs.ops import Ops  # noqa: E402
+from bot.utils.command_sync import clear_guild_copies, sync_commands  # noqa: E402
 
 
 class _FakeTree:
@@ -75,26 +76,98 @@ class ClearGuildCopiesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([g.id for g in cleared], [2])
 
 
-class RunCommandSyncTests(unittest.IsolatedAsyncioTestCase):
-    def _bot(self, tree, dev_guild_id=None):
-        return SimpleNamespace(
-            tree=tree, settings=SimpleNamespace(dev_guild_id=dev_guild_id)
-        )
-
+class SyncCommandsTests(unittest.IsolatedAsyncioTestCase):
     async def test_syncs_global_and_cleans_duplicates(self) -> None:
         tree = _FakeTree({1: ["help", "report"]})
-        msg = await run_command_sync(self._bot(tree), [_guild(1)])
-        self.assertIn(("sync", "global"), tree.calls)
+        result = await sync_commands(tree, [_guild(1)])
+        self.assertEqual(result.global_count, 2)
         self.assertNotIn(("copy", 1), tree.calls)
         self.assertEqual(tree.remote[1], [])
-        self.assertIn("Removed duplicate", msg)
+        self.assertIn("Removed duplicate", result.summary())
+
+    async def test_control_guild_keeps_its_commands(self) -> None:
+        tree = _FakeTree({7: ["ops"]})
+        tree.local_guild[7] = ["ops"]  # cog registered /ops to the control guild
+        result = await sync_commands(tree, [_guild(1), _guild(7)], control_guild_id=7)
+        self.assertNotIn(("clear", 7), tree.calls)
+        self.assertEqual(tree.remote[7], ["ops"])
+        self.assertEqual(result.control_count, 1)
+        self.assertEqual(result.cleared, [])
+
+    async def test_control_guild_not_joined_is_reported(self) -> None:
+        tree = _FakeTree({})
+        real_sync = tree.sync
+
+        async def sync(*, guild=None):
+            if guild is not None and guild.id == 7:
+                raise discord.Forbidden(SimpleNamespace(status=403, reason="x"), "no")
+            return await real_sync(guild=guild)
+
+        tree.sync = sync
+        with self.assertLogs("bot.utils.command_sync", level="WARNING"):
+            result = await sync_commands(tree, [_guild(1)], control_guild_id=7)
+        self.assertEqual(result.global_count, 2)
+        self.assertIn("not in that server", result.summary())
 
     async def test_dev_guild_only_skips_global(self) -> None:
         tree = _FakeTree({})
-        msg = await run_command_sync(self._bot(tree, dev_guild_id=9), [_guild(1)])
+        result = await sync_commands(tree, [_guild(1)], dev_guild_id=9)
         self.assertNotIn(("sync", "global"), tree.calls)
         self.assertEqual(tree.remote[9], ["help", "report"])
-        self.assertIn("dev server", msg)
+        self.assertIn("dev server", result.summary())
+
+
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send_message(self, text, ephemeral=False):
+        self.sent.append(text)
+
+
+class OperatorCheckTests(unittest.IsolatedAsyncioTestCase):
+    OWNER, CONTROL = 100, 7
+
+    def _cog(self) -> Ops:
+        settings = SimpleNamespace(
+            bot_owner_ids=frozenset({self.OWNER}), control_guild_id=self.CONTROL
+        )
+        return Ops(SimpleNamespace(settings=settings))
+
+    def _interaction(self, user_id: int, guild_id: int):
+        return SimpleNamespace(
+            user=SimpleNamespace(id=user_id),
+            guild_id=guild_id,
+            response=_FakeResponse(),
+        )
+
+    async def _check(self, user_id: int, guild_id: int):
+        inter = self._interaction(user_id, guild_id)
+        with self.assertNoLogs("bot.cogs.ops", level="WARNING") if (
+            user_id == self.OWNER and guild_id == self.CONTROL
+        ) else self.assertLogs("bot.cogs.ops", level="WARNING"):
+            ok = await self._cog().interaction_check(inter)
+        return ok, inter.response.sent
+
+    async def test_owner_in_control_guild_allowed(self) -> None:
+        ok, sent = await self._check(self.OWNER, self.CONTROL)
+        self.assertTrue(ok)
+        self.assertEqual(sent, [])
+
+    async def test_owner_in_other_guild_refused(self) -> None:
+        ok, sent = await self._check(self.OWNER, 1)
+        self.assertFalse(ok)
+        self.assertEqual(len(sent), 1)
+
+    async def test_other_user_in_control_guild_refused(self) -> None:
+        ok, _ = await self._check(200, self.CONTROL)
+        self.assertFalse(ok)
+
+    async def test_prefix_commands_refuse_non_operator(self) -> None:
+        cog = self._cog()
+        self.assertTrue(await cog.cog_check(SimpleNamespace(author=SimpleNamespace(id=self.OWNER))))
+        with self.assertRaises(commands.NotOwner):
+            await cog.cog_check(SimpleNamespace(author=SimpleNamespace(id=200)))
 
 
 if __name__ == "__main__":
