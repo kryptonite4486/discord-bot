@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 import discord
 from discord.ext import commands
@@ -182,7 +183,32 @@ async def amain() -> None:
     # Prefer Bot.on_app_command_error when present; also bind tree for compatibility.
     bot.tree.on_error = bot.on_app_command_error
     async with bot:
+        _install_shutdown_handlers(bot)
         await bot.start(settings.discord_token)
+
+
+def _install_shutdown_handlers(bot: WeeklyMetricsBot) -> None:
+    """Close the bot cleanly on SIGTERM/SIGINT.
+
+    In Docker the bot runs as PID 1, where SIGTERM has no default action, so
+    without a handler ``docker stop`` waits out the grace period and SIGKILLs
+    us before the database is closed and the WAL checkpointed.
+    """
+    loop = asyncio.get_running_loop()
+    closing: list[asyncio.Task[None]] = []  # hold a strong ref to the task
+
+    def request_shutdown(sig: signal.Signals) -> None:
+        if closing:
+            return
+        log.info("Received %s, shutting down", sig.name)
+        closing.append(loop.create_task(bot.close()))
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, request_shutdown, sig)
+        except (NotImplementedError, RuntimeError):
+            # Windows / non-main thread: fall back to default handling.
+            pass
 
 
 def main() -> None:
