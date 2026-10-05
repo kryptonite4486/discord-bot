@@ -20,6 +20,8 @@ Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Te
 ```bash
 cp .env.example .env
 # edit DISCORD_TOKEN (and optional OCR_CHANNEL_ID / DEV_GUILD_ID / LEGACY_GUILD_ID)
+# set BOT_DATA_DIR and BOT_BACKUP_DIR to absolute host paths outside the repo
+mkdir -p ~/DiscordBot/data ~/Documents/DiscordBot-dataBackup
 ```
 
 4. Build and run:
@@ -29,7 +31,30 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-SQLite persists in `./data/weekly.db` on the host.
+## Data and backups
+
+Runtime data lives **outside the repo**, so deleting or re-cloning the code never touches it:
+
+| Host folder (`.env`) | In container | Contents |
+|---|---|---|
+| `BOT_DATA_DIR`, e.g. `~/DiscordBot/data` | `/app/data` | Live database `weekly.db` (+ `-wal`/`-shm` while running) |
+| `BOT_BACKUP_DIR`, e.g. `~/Documents/DiscordBot-dataBackup` | `/app/backups` | Backup copies; safe to sync (e.g. iCloud) |
+
+`docker-compose.yml` refuses to start if either variable is unset. Inside the container, the bot also refuses to start if `/app/data` isn't a mounted folder (override with `ALLOW_UNMOUNTED_DATA=1`), and disables backups if `/app/backups` isn't mounted.
+
+**Backups.** The bot writes `weekly-YYYYMMDD-HHMMSS-daily.db` once a day (checked hourly, so restarts or a sleeping Mac delay it by at most an hour) and keeps the newest `BACKUP_KEEP` (default 14). `/admin backup` writes a `-manual.db` copy on demand; the newest 10 are kept. Backups go through SQLite's `VACUUM INTO`, so they're consistent even while the bot is writing, and appear only once complete. Timestamps are UTC.
+
+**Don't open or copy the live `weekly.db` from the Mac while the bot is running.** The database uses WAL mode, whose locking doesn't work across Docker Desktop's VM boundary, and a plain copy can miss recent writes. Open a backup instead, or stop the bot first.
+
+**Restore a backup:**
+
+```bash
+docker compose down
+cd ~/DiscordBot/data
+mkdir -p ../replaced && mv weekly.db* ../replaced/   # keep the current files, just in case
+cp ~/Documents/DiscordBot-dataBackup/weekly-YYYYMMDD-HHMMSS-daily.db weekly.db
+cd - && docker compose up -d
+```
 
 ## Local run (without Docker)
 
@@ -187,7 +212,7 @@ bot/
   ocr/              # Vision-model OCR (oMLX) and response parsing
   reporting/        # markdown + matplotlib
   utils/            # logging, parsing
-data/               # persistent volume (weekly.db)
+data/               # placeholder only; the database lives in BOT_DATA_DIR
 Dockerfile
 docker-compose.yml
 ```

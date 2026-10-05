@@ -70,6 +70,9 @@ class Settings:
     legacy_guild_id: str | None
     app_id: int | None
     message_content_intent: bool
+    backup_dir: Path | None
+    backup_keep: int
+    allow_unmounted_data: bool
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -102,6 +105,13 @@ class Settings:
             app_id=_optional_int("DISCORD_APP_ID"),
             # Requires Privileged Gateway Intent in the Discord Developer Portal
             message_content_intent=_env_bool("MESSAGE_CONTENT_INTENT", True),
+            backup_dir=(
+                Path(os.environ["BACKUP_DIR"])
+                if os.getenv("BACKUP_DIR", "").strip()
+                else None
+            ),
+            backup_keep=max(1, _optional_int("BACKUP_KEEP") or 14),
+            allow_unmounted_data=_env_bool("ALLOW_UNMOUNTED_DATA", False),
         )
 
 

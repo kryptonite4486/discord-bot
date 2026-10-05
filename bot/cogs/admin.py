@@ -5,11 +5,13 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
+from bot.utils.backup import create_backup, last_backup_time
 from bot.utils.guild import (
     channel_id_from_context,
     channel_id_from_interaction,
@@ -47,6 +49,7 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     ),
     "bot.cogs.admin": (
         "bot.utils.guild",
+        "bot.utils.backup",
     ),
 }
 
@@ -80,13 +83,68 @@ def _reload_dependencies(extension: str, bot: commands.Bot | None = None) -> lis
     return refreshed
 
 
+BACKUP_INTERVAL = timedelta(hours=24)
+
+
 class Admin(commands.Cog):
-    """Bot administration: reload, sync, stats."""
+    """Bot administration: reload, sync, stats, backups."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def cog_load(self) -> None:
+        if getattr(self.bot, "backups_enabled", False):
+            self.daily_backup.start()
+
+    async def cog_unload(self) -> None:
+        self.daily_backup.cancel()
+
+    # Checks hourly rather than sleeping 24h, so a restart or a sleeping Mac
+    # delays the daily backup by at most an hour instead of skipping it.
+    @tasks.loop(hours=1)
+    async def daily_backup(self) -> None:
+        settings = self.bot.settings
+        last = last_backup_time(settings.backup_dir, "daily")
+        if last is not None and datetime.now(timezone.utc) - last < BACKUP_INTERVAL:
+            return
+        try:
+            await create_backup(
+                self.bot.db, settings.backup_dir, "daily", keep=settings.backup_keep
+            )
+        except Exception:
+            log.exception("Scheduled database backup failed")
+
     admin = app_commands.Group(name="admin", description="Bot administration")
+
+    @admin.command(
+        name="backup",
+        description="Write a database backup to the host backup folder now",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def backup(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if not getattr(self.bot, "backups_enabled", False):
+            await interaction.followup.send(
+                "Backups are disabled: no backup folder is mounted "
+                "(set `BOT_BACKUP_DIR` in .env). Check the bot logs.",
+                ephemeral=True,
+            )
+            return
+        settings = self.bot.settings
+        try:
+            path = await create_backup(
+                self.bot.db, settings.backup_dir, "manual", keep=settings.backup_keep
+            )
+        except Exception as exc:
+            log.exception("Manual database backup failed")
+            await interaction.followup.send(f"Backup failed: `{exc}`", ephemeral=True)
+            return
+        log.info("Manual backup %s by %s", path.name, interaction.user)
+        await interaction.followup.send(
+            f"Backup saved on the host as `{path.name}` "
+            f"({path.stat().st_size / 1024:,.0f} KB).",
+            ephemeral=True,
+        )
 
     @admin.command(name="reload", description="Reload a cog module")
     @app_commands.describe(cog="Cog module name, e.g. ingest or reports")

@@ -18,7 +18,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY bot/ ./bot/
 COPY data/.gitkeep ./data/
 
-RUN mkdir -p /app/data /app/tmp \
+RUN mkdir -p /app/data /app/backups /app/tmp \
     && useradd --create-home --uid 1000 botuser \
     && chown -R botuser:botuser /app
 

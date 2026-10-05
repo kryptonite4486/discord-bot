@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 import discord
 from discord.ext import commands
@@ -13,6 +14,7 @@ from bot.config import Settings
 from bot.db import Database
 from bot.utils import setup_logging
 from bot.utils.guild import reject_dm_context, reject_dm_interaction
+from bot.utils.storage import check_persistent_paths
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ COGS = (
 class WeeklyMetricsBot(commands.Bot):
     """Modular discord.py bot with SQLite-backed weekly metrics."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, backups_enabled: bool = False) -> None:
         intents = discord.Intents.default()
         intents.message_content = settings.message_content_intent
         intents.members = False
@@ -40,6 +42,7 @@ class WeeklyMetricsBot(commands.Bot):
             help_command=commands.DefaultHelpCommand(),
         )
         self.settings = settings
+        self.backups_enabled = backups_enabled
         self.db = Database(
             settings.database_path,
             legacy_guild_id=settings.legacy_guild_id,
@@ -177,12 +180,49 @@ async def amain() -> None:
         settings.ocr_vision_base_url,
         settings.ocr_vision_timeout,
     )
+    backups_enabled = check_persistent_paths(
+        settings.database_path,
+        settings.backup_dir,
+        allow_unmounted=settings.allow_unmounted_data,
+    )
+    log.info(
+        "Database=%s backups=%s",
+        settings.database_path,
+        f"{settings.backup_dir} (keep {settings.backup_keep} daily)"
+        if backups_enabled
+        else "disabled",
+    )
 
-    bot = WeeklyMetricsBot(settings)
+    bot = WeeklyMetricsBot(settings, backups_enabled=backups_enabled)
     # Prefer Bot.on_app_command_error when present; also bind tree for compatibility.
     bot.tree.on_error = bot.on_app_command_error
     async with bot:
+        _install_shutdown_handlers(bot)
         await bot.start(settings.discord_token)
+
+
+def _install_shutdown_handlers(bot: WeeklyMetricsBot) -> None:
+    """Close the bot cleanly on SIGTERM/SIGINT.
+
+    In Docker the bot runs as PID 1, where SIGTERM has no default action, so
+    without a handler ``docker stop`` waits out the grace period and SIGKILLs
+    us before the database is closed and the WAL checkpointed.
+    """
+    loop = asyncio.get_running_loop()
+    closing: list[asyncio.Task[None]] = []  # hold a strong ref to the task
+
+    def request_shutdown(sig: signal.Signals) -> None:
+        if closing:
+            return
+        log.info("Received %s, shutting down", sig.name)
+        closing.append(loop.create_task(bot.close()))
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, request_shutdown, sig)
+        except (NotImplementedError, RuntimeError):
+            # Windows / non-main thread: fall back to default handling.
+            pass
 
 
 def main() -> None:

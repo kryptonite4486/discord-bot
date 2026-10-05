@@ -6,12 +6,17 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      # Runtime data lives outside the repo so deleting or re-cloning the code
+      # never touches it. Both paths are required; compose refuses to start
+      # without them rather than falling back to a folder in the repo.
+      - ${BOT_DATA_DIR:?Set BOT_DATA_DIR in .env (host folder for weekly.db)}:/app/data
+      - ${BOT_BACKUP_DIR:?Set BOT_BACKUP_DIR in .env (host folder for backups)}:/app/backups
       # Live-mount app code so host edits apply without a full image rebuild.
       # /admin reload picks up cog changes; restart for main/config changes.
       - ./bot:/app/bot
     environment:
       - DATABASE_PATH=/app/data/weekly.db
+      - BACKUP_DIR=/app/backups
     # Reach oMLX / other services on the Mac host (Docker Desktop provides
     # host.docker.internal; host-gateway covers Linux Compose as well).
     extra_hosts:

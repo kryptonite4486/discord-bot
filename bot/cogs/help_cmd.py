@@ -19,6 +19,7 @@ Admin
   /admin reload          Reload a cog module (Administrator)
   /admin sync            Sync slash commands (Administrator)
   /admin stats           Datastore stats (this channel; scope:server for all)
+  /admin backup          Save a database backup to the host backup folder now
 
 Add / Ingest
   /add versus       Add Versus Points for a player

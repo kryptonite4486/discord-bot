@@ -285,6 +285,10 @@ class Database:
         await self.conn.commit()
         return len(payload)
 
+    async def vacuum_into(self, path: Path) -> None:
+        """Write a consistent, compacted copy of the database to ``path``."""
+        await self.conn.execute("VACUUM INTO ?", (str(path),))
+
     async def get_latest_values(
         self,
         guild_id: str,
