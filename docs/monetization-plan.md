@@ -1,4 +1,4 @@
-# Monetization Plan — Weekly Metrics Bot
+# Monetization Plan — LastZ Assistant
 
 Status: draft, 2026-10-05. Nothing here is implemented yet.
 
@@ -25,7 +25,7 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 2. **Per-server settings table** (`GuildSettings`): default week, locale, and a "report channel" for scheduled posts and gift notices. Add a `/setup` command for server admins.
 3. ✅ *Counting done 2026-10-05 (`UsageLedger`, `/ops usage`); enforcement comes with tiers.* **Usage metering** (`UsageLedger`): per-server counters per UTC day for OCR batches, images sent to the model, failures, OCR seconds and queue-wait seconds, written once each batch finishes. Daily rows add up to weekly quotas and also show peak days. This drives quotas and tells you your real costs.
 4. ✅ *Fair turns done 2026-10-05 (`bot/utils/fair_queue.py`): servers take turns one whole request at a time; the paid priority lane comes with tiers.* **Fair OCR queue.** Replace the single FIFO semaphore with per-guild queues and a scheduler that serves guilds round-robin, with a priority lane for paid tiers. Otherwise one free server's 50-image zip blocks a paying customer.
-5. **Privacy Policy and Terms of Service**, published at stable URLs. They need to cover what is stored (player names and game stats, *not* Discord user data), how long it's kept, and how to request deletion.
+5. 🟡 *Written 2026-10-05 in `site/` (operator LastZ Assistant, lastzassistant@gmail.com, governed by Pennsylvania law) for the `lastz-assistant` Cloudflare Pages project; needs a review, publishing, and the URLs added in the Developer Portal.* **Privacy Policy and Terms of Service**, published at stable URLs. They need to cover what is stored (player names and game stats, *not* Discord user data), how long it's kept, and how to request deletion.
 6. ✅ *Done 2026-10-05: 30-day retention after removal (`DATA_RETENTION_DAYS`), cancelled if the bot is re-added; kept indefinitely while a subscription (paid, gift or trial) is active, with the 30 days starting when it ends; `/data delete` for admins; `/ops purges`. Backups are capped at 30 days (`BACKUP_MAX_AGE_DAYS`), so deleted data is gone from them within 30 days.* **Data deletion:** `/data delete` (server admin, with confirmation) and a removal job. When the bot leaves a guild (`on_guild_remove`), mark the guild and purge its data after a grace period (e.g. 30 days).
 7. **Remove the Message Content intent dependency.** Discord requires approval for this privileged intent once a bot is in 100+ servers, and verification starts at 75. The auto-OCR channel has been dropped, so two things still depend on it:
    - `/ingest batch` reads images and `done` from ordinary messages. Change it to collect only messages that @mention the bot, which Discord delivers without the intent.

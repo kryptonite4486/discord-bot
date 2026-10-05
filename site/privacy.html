@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy · LastZ Assistant</title>
+  <meta name="description" content="What LastZ Assistant stores, for how long, and how to delete it.">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">LastZ Assistant</a>
+    <nav>
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated 5 October 2026</p>
+
+    <p>This policy explains what the LastZ Assistant Discord bot (“the bot”) stores, why, for how long, and how to get it deleted. LastZ Assistant (“we”, “us”) runs the bot. Contact us at <a href="mailto:lastzassistant@gmail.com">lastzassistant@gmail.com</a>.</p>
+
+    <h2>What the bot stores</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Data</th><th>Where it comes from</th><th>Why</th></tr>
+        <tr>
+          <td><strong>In-game player names and stats</strong>: Versus Points, Tech Contribution, HQ level, Power, Arena Power and Kills, by week</td>
+          <td>Server members add them with commands, pasted text or game screenshots</td>
+          <td>To produce the server's leaderboards, trends and reports</td>
+        </tr>
+        <tr>
+          <td><strong>Discord server and channel IDs</strong></td>
+          <td>Discord, with each command</td>
+          <td>To keep each server's and channel's data separate</td>
+        </tr>
+        <tr>
+          <td><strong>Usage counts</strong>: per server per day, the number of screenshots processed, failures, and processing and waiting time</td>
+          <td>The bot, as it works</td>
+          <td>Capacity planning, fair queuing and usage limits. No player data.</td>
+        </tr>
+        <tr>
+          <td><strong>Subscription records</strong> (once subscriptions are offered): which server, which plan, and start and end dates</td>
+          <td>Discord, or us for gifted plans</td>
+          <td>To provide paid features. We never see payment details: Discord handles payments.</td>
+        </tr>
+        <tr>
+          <td><strong>Operational logs</strong>: commands run, errors, and processing details. These can include the Discord username and ID of the person who ran an admin command, player names, and uploaded file names.</td>
+          <td>The bot, as it works</td>
+          <td>To fix problems and investigate misuse</td>
+        </tr>
+      </table>
+    </div>
+
+    <p><strong>Screenshots aren't kept.</strong> Images and zip files you upload are downloaded, read by a vision model running on our own hardware (not a third-party AI service), and discarded once the stats are extracted. They aren't used to train any model.</p>
+
+    <p><strong>Discord messages aren't stored.</strong> Discord sends the bot messages from channels it can see. It ignores everything except its own commands, and it doesn't store message text, member lists or Discord account details. While someone runs <code>/ingest batch</code>, the bot reads only that person's messages in that channel, to collect their screenshots, until they type <code>done</code>.</p>
+
+    <h2>About player names</h2>
+    <p>Player names come from the game and are uploaded by alliance members, usually the alliance's leaders. That means the bot can hold names of players who have never used it. If your in-game name is stored and you want it removed, ask the server's admins, who can delete it with <code>/data delete</code>, or contact us with the server and name, and we'll remove it.</p>
+
+    <h2>How the data is used</h2>
+    <p>Data is used only to provide the bot's features to the server it was added in. Each server's data is kept separate and is never shown to another server. We don't sell data, use it for advertising, or share it with anyone, except where the law requires us to.</p>
+
+    <h2>How long it's kept</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Situation</th><th>What happens</th></tr>
+        <tr><td>The bot is in your server</td><td>Your server's data is kept so reports can show history.</td></tr>
+        <tr><td>A server admin runs <code>/data delete</code></td><td>That channel's or the whole server's data is deleted immediately.</td></tr>
+        <tr><td>The bot is removed from your server</td><td>Data is kept for <strong>30 days</strong>, then deleted. Adding the bot back within 30 days keeps everything, so removing it by accident loses nothing.</td></tr>
+        <tr><td>The bot is removed, but the server has an active subscription</td><td>Data is kept while the subscription is active, then for 30 days after it ends.</td></tr>
+        <tr><td>Backups</td><td>Kept for at most <strong>30 days</strong>, so deleted data is gone from backups within 30 days of being deleted.</td></tr>
+        <tr><td>Usage counts</td><td>Kept, because they contain no player data.</td></tr>
+        <tr><td>Operational logs</td><td>Kept in size-limited files that are overwritten as new entries are written.</td></tr>
+      </table>
+    </div>
+
+    <h2>Where it's stored</h2>
+    <p>The bot and its database run on our own computer in Pennsylvania, United States. Backups are kept on our own storage, which may be synced to our personal cloud storage (for example Apple iCloud). Discord processes your commands and uploads under <a href="https://discord.com/privacy">Discord's Privacy Policy</a>. The website you're reading is hosted by Cloudflare.</p>
+
+    <h2>Your choices and rights</h2>
+    <ul>
+      <li>Server admins can delete their server's data at any time with <code>/data delete</code>, for one channel or the whole server.</li>
+      <li>Anyone can contact us to ask what's stored about an in-game name, or to have it corrected or deleted.</li>
+      <li>Depending on where you live (for example in the EU or UK), you may have further rights, such as to object to processing or to complain to your data protection authority. We rely on our legitimate interest in providing the features a server's admins asked for.</li>
+    </ul>
+
+    <h2>Age</h2>
+    <p>You must meet Discord's minimum age for your country to use the bot.</p>
+
+    <h2>Security</h2>
+    <p>We take reasonable steps to protect the data, including keeping it on our own hardware and limiting who can run admin commands. No system is perfectly secure, though, so we can't guarantee absolute security.</p>
+
+    <h2>Changes</h2>
+    <p>If this policy changes, we'll update the date at the top. If a change materially affects how your data is used, we'll also tell servers through the bot or our support channels before it takes effect.</p>
+
+    <h2>Contact</h2>
+    <p>LastZ Assistant · <a href="mailto:lastzassistant@gmail.com">lastzassistant@gmail.com</a></p>
+  </main>
+  <footer>
+    LastZ Assistant is an independent fan project. It isn't affiliated with or endorsed by the makers of Last Z or by Discord.
+  </footer>
+</body>
+</html>

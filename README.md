@@ -1,6 +1,6 @@
-# Weekly Metrics Discord Bot
+# LastZ Assistant
 
-Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Tech Contribution, HQ Level, Power, Arena Power, Kills), stores them in SQLite, and generates analytical reports on demand. Designed to run in Docker on a local Mac Studio.
+Discord bot for Last Z alliances: a modular **discord.py** bot that ingests weekly player metrics (Versus Points, Tech Contribution, HQ Level, Power, Arena Power, Kills), stores them in SQLite, and generates analytical reports on demand. Designed to run in Docker on a local Mac Studio.
 
 ## Features
 
@@ -229,6 +229,24 @@ On startup, if `WeeklyMetrics` exists without `GuildId`, the bot rebuilds the ta
 If the table has `GuildId` but no `ChannelId`, startup adds `ChannelId` default `''` (unassigned) for all existing rows — backfill those before relying on Phase 2 isolation.
 
 Fresh databases skip migration and create the new schema directly.
+
+## Policy site
+
+`site/` holds the public website: a home page, the Privacy Policy (`privacy.html`) and the Terms of Service (`terms.html`). It's plain static HTML with no build step, published as the Cloudflare Pages project **`lastz-assistant`** (`https://lastz-assistant.pages.dev`). Pages serves `privacy.html` at `/privacy`; use those URLs in the Discord Developer Portal (General Information → Privacy Policy URL and Terms of Service URL).
+
+**Before publishing**, replace every highlighted placeholder (`[OPERATOR NAME]`, `[CONTACT EMAIL]`, `[COUNTRY]`). This lists any that are left:
+
+```bash
+grep -rn 'class="todo"' site/
+```
+
+**Deploy:** either connect this repo in the Cloudflare dashboard (Workers & Pages → Create → Pages → Connect to Git, framework preset *None*, no build command, build output directory `site`), or upload directly:
+
+```bash
+npx wrangler pages deploy site --project-name lastz-assistant
+```
+
+**Keep it in step with the bot.** The policy describes real behaviour (30-day retention after removal, subscriptions extending it, 30-day backups, size-limited logs). `tests/test_site.py` fails if the retention defaults change without the policy changing too; update the "Last updated" date with any edit.
 
 ## Tests
 
