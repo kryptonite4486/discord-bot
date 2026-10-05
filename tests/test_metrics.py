@@ -22,7 +22,12 @@ from bot.config import (  # noqa: E402
 from bot.ocr.pipeline import ExtractedMetric, relabel_member_cards  # noqa: E402
 from bot.db import Database  # noqa: E402
 from bot.utils.parsing import format_value  # noqa: E402
-from bot.utils.plausibility import RULES, check_batch, evaluate  # noqa: E402
+from bot.utils.plausibility import (  # noqa: E402
+    RULES,
+    check_batch,
+    evaluate,
+    evaluate_arena_vs_power,
+)
 
 
 class MetricConfigTests(unittest.TestCase):
@@ -71,38 +76,47 @@ SWAG_ARENA = {"MohameD": 119_400_000, "Haydar": 105_600_000, "Pharaoh M": 124_30
 SWAG_POWER = {"mohamed": 148_900_000, "haydar": 145_100_000, "pharaoh m": 184_500_000}
 
 
-class EvaluateTests(unittest.TestCase):
-    def test_general_screenshot_filed_as_arena_flagged(self) -> None:
-        # Values equal (or close) to total Power; C is a genuine arena value.
-        values = {"A": 65_000_000, "B": 59_000_000, "C": 9_000_000}
-        power = {"a": 65_000_000, "b": 60_000_000, "c": 90_000_000}
-        alert = _evaluate("ArenaPower", "Power", values, power)
-        self.assertIsNotNone(alert)
-        self.assertIn("2 of 3", alert)
-        self.assertIn("dataset:general", alert)
+def _pairs(arena: dict[str, float], power: dict[str, float]) -> dict[str, tuple[float, float]]:
+    return {name: (arena[name], power[name]) for name in arena}
 
+
+class ArenaVsPowerTests(unittest.TestCase):
     def test_high_but_real_arena_share_quiet(self) -> None:
-        self.assertIsNone(_evaluate("ArenaPower", "Power", SWAG_ARENA, SWAG_POWER))
+        power = {"MohameD": 148_900_000, "Haydar": 145_100_000, "Pharaoh M": 184_500_000}
+        self.assertIsNone(evaluate_arena_vs_power(_pairs(SWAG_ARENA, power)))
 
-    def test_arena_filed_as_general_compared_to_last_week_still_flagged(self) -> None:
-        # Arena uploaded before this week's General: a mis-filed General's
-        # values exceed last week's (lower) Power, so they still match.
-        values = {"A": 66_000_000, "B": 61_000_000, "C": 91_000_000}
-        last_week = {"a": 65_000_000, "b": 60_000_000, "c": 90_000_000}
-        self.assertIsNotNone(_evaluate("ArenaPower", "Power", values, last_week))
+    def test_mixup_when_many_players_match_total_power(self) -> None:
+        # The same screenshot filed under both datasets: values equal or +-1%.
+        arena = {"A": 65_000_000, "B": 60_600_000, "C": 89_100_000, "D": 9_000_000}
+        power = {"A": 65_000_000, "B": 60_000_000, "C": 90_000_000, "D": 90_000_000}
+        warning = evaluate_arena_vs_power(_pairs(arena, power))
+        self.assertIsNotNone(warning)
+        self.assertIn("3 of 4 player(s)", warning)
+        self.assertIn("wrong dataset", warning)
 
-    def test_arena_screenshot_filed_as_general_flagged(self) -> None:
-        # "Power" values equal to the stored Arena Power.
-        arena = {k.lower(): v for k, v in SWAG_ARENA.items()}
-        alert = _evaluate("Power", "ArenaPower", SWAG_ARENA, arena)
-        self.assertIsNotNone(alert)
-        self.assertIn("dataset:arena", alert)
+    def test_single_impossible_value_is_named(self) -> None:
+        # One dropped decimal (34.8M read as 348M) is never legitimate.
+        arena = {"EnemyHelicopter": 348_000_000, "S0FIA": 10_900_000}
+        power = {"EnemyHelicopter": 99_100_000, "S0FIA": 78_200_000}
+        warning = evaluate_arena_vs_power(_pairs(arena, power))
+        self.assertIsNotNone(warning)
+        self.assertIn("`EnemyHelicopter` (Arena 348.0M vs Power 99.1M)", warning)
+        self.assertNotIn("S0FIA", warning)
+        self.assertIn("misread", warning)
 
-    def test_real_power_vs_arena_quiet(self) -> None:
-        arena = {k.lower(): v for k, v in SWAG_ARENA.items()}
-        real_power = {"MohameD": 148_900_000, "Haydar": 145_100_000, "Pharaoh M": 184_500_000}
-        self.assertIsNone(_evaluate("Power", "ArenaPower", real_power, arena))
+    def test_impossible_list_is_capped(self) -> None:
+        arena = {f"P{n}": 200.0 for n in range(8)}
+        power = {f"P{n}": 100.0 for n in range(8)}
+        arena.update({f"Q{n}": 10.0 for n in range(30)})
+        power.update({f"Q{n}": 100.0 for n in range(30)})
+        warning = evaluate_arena_vs_power(_pairs(arena, power))
+        self.assertIn("and 3 more", warning)
 
+    def test_nothing_to_compare(self) -> None:
+        self.assertIsNone(evaluate_arena_vs_power({}))
+
+
+class EvaluateTests(unittest.TestCase):
     def test_power_collapse_flagged(self) -> None:
         values = {"A": 6_500_000, "B": 6_000_000, "C": 5_000_000}
         previous = {"a": 65_000_000, "b": 60_000_000, "c": 50_000_000}
@@ -145,6 +159,8 @@ class EvaluateTests(unittest.TestCase):
     def test_no_history_or_unchecked_metric(self) -> None:
         self.assertIsNone(_evaluate("Kills", "Kills", {"A": 1}, {}))
         self.assertNotIn("VersusPoints", RULES)
+        # Arena/Power is checked within a week, not against earlier weeks.
+        self.assertNotIn("ArenaPower", RULES)
 
 
 class CheckBatchTests(unittest.IsolatedAsyncioTestCase):
@@ -180,36 +196,55 @@ class CheckBatchTests(unittest.IsolatedAsyncioTestCase):
                     await check_batch(db, "g1", "c1", "2026-09-27", "Kills", higher), []
                 )
 
-                # Arena compares with Power from the same week.
-                alerts = await check_batch(
-                    db,
+                # Arena compares with Power from the same week only.
+                await db.upsert_metrics(
                     "g1",
-                    "c1",
-                    "2026-09-27",
-                    "ArenaPower",
-                    {"EnemyHelicopter": 110_000_000},
+                    [
+                        ("2026-09-27", "EnemyHelicopter", "Power", 112_000_000),
+                        ("2026-09-27", "KBeezCONC", "Power", 65_500_000),
+                    ],
+                    channel_id="c1",
+                )
+                alerts = await check_batch(
+                    db, "g1", "c1", "2026-09-27", "ArenaPower",
+                    {"EnemyHelicopter": 348_000_000, "KBeezCONC": 26_300_000},
                 )
                 self.assertEqual(len(alerts), 1)
-                # A real arena share, however high, passes.
+                self.assertIn("EnemyHelicopter", alerts[0])
+                # No same-week Power yet: skipped, never compared to older weeks.
                 self.assertEqual(
                     await check_batch(
-                        db, "g1", "c1", "2026-09-27", "ArenaPower",
-                        {"EnemyHelicopter": 80_000_000},
+                        db, "g1", "c1", "2026-10-04", "ArenaPower",
+                        {"EnemyHelicopter": 120_000_000, "KBeezCONC": 70_000_000},
                     ),
                     [],
                 )
 
-                # Power runs both of its checks: equal to stored Arena Power.
+                # Arena uploaded first, then a mis-filed Arena screenshot as General:
+                # the second upload (Power) sees the same-week Arena values.
                 await db.upsert_metrics(
                     "g1",
-                    [("2026-09-27", "KBeezCONC", "ArenaPower", 30_000_000)],
+                    [
+                        ("2026-10-04", "A", "ArenaPower", 30_000_000),
+                        ("2026-10-04", "B", "ArenaPower", 20_000_000),
+                        ("2026-10-04", "C", "ArenaPower", 10_000_000),
+                    ],
                     channel_id="c1",
                 )
                 alerts = await check_batch(
-                    db, "g1", "c1", "2026-09-27", "Power", {"KBeezCONC": 30_500_000}
+                    db, "g1", "c1", "2026-10-04", "Power",
+                    {"A": 30_000_000, "B": 20_000_000, "C": 10_000_000},
                 )
                 self.assertEqual(len(alerts), 1)
-                self.assertIn("dataset:arena", alerts[0])
+                self.assertIn("wrong dataset", alerts[0])
+                # Real Power for the same players is fine.
+                self.assertEqual(
+                    await check_batch(
+                        db, "g1", "c1", "2026-10-04", "Power",
+                        {"A": 100_000_000, "B": 90_000_000, "C": 80_000_000},
+                    ),
+                    [],
+                )
             finally:
                 await db.close()
 
