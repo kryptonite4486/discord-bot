@@ -51,8 +51,8 @@ class WeeklyMetricsBot(commands.Bot):
         self._guild_commands_synced = False
         if not settings.message_content_intent:
             log.warning(
-                "MESSAGE_CONTENT_INTENT=false — prefix commands and OCR channel "
-                "auto-ingest will not work; slash commands still will."
+                "MESSAGE_CONTENT_INTENT=false — prefix commands and /ingest batch "
+                "will not work; other slash commands still will."
             )
 
         # Central guild-only gates so every command (and future cogs) inherit them.

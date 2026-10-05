@@ -62,7 +62,6 @@ class Settings:
     discord_token: str
     command_prefix: str
     database_path: Path
-    ocr_channel_id: int | None
     ocr_vision_base_url: str
     ocr_vision_model: str
     ocr_vision_api_key: str
@@ -96,7 +95,6 @@ class Settings:
             discord_token=token,
             command_prefix=os.getenv("COMMAND_PREFIX", "!").strip() or "!",
             database_path=db_path,
-            ocr_channel_id=_optional_int("OCR_CHANNEL_ID"),
             ocr_vision_base_url=vision_base,
             ocr_vision_model=vision_model,
             ocr_vision_api_key=vision_api_key,

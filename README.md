@@ -5,7 +5,7 @@ Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Te
 ## Features
 
 - Slash + prefix commands via cogs (`admin`, `ingest`, `reports`)
-- Message Content intent for OCR channel auto-ingest
+- Message Content intent for prefix commands and `/ingest batch`
 - SQLite fact table `WeeklyMetrics` at `/app/data/weekly.db`, **partitioned per Discord server** (`GuildId`)
 - Manual `/add`, pasted CSV/text `/ingest text`, OCR `/ingest image` / `/ingest zip` / `/ingest batch`
 - Reports: weekly summary, player trends, growth, leaderboards, PNG charts
@@ -19,7 +19,7 @@ Modular **discord.py** bot that ingests weekly player metrics (Versus Points, Te
 
 ```bash
 cp .env.example .env
-# edit DISCORD_TOKEN (and optional OCR_CHANNEL_ID / DEV_GUILD_ID / LEGACY_GUILD_ID)
+# edit DISCORD_TOKEN (and optional DEV_GUILD_ID / LEGACY_GUILD_ID)
 # set BOT_DATA_DIR and BOT_BACKUP_DIR to absolute host paths outside the repo
 mkdir -p ~/DiscordBot/data ~/Documents/DiscordBot-dataBackup
 ```
@@ -113,7 +113,7 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 
 `/ingest image` accepts up to **10** attachment slots (`image` … `image10`) — Discord’s per-message limit. Multi-select on a single slot usually only sends the first file; fill slots separately or use **`/ingest batch`** for larger Versus/Tech dumps (send several messages of up to 10, then type `done`).
 
-**Zip uploads.** `/ingest zip` (and `/ingest batch`, `!ingestimage`, and the auto-OCR channel) accept `.zip` archives of screenshots. Images are processed in filename order, and folders, `__MACOSX/`, dotfiles and non-image files are skipped. Limits: 50 images per run, 20 MB per image and 200 MB in total after unzipping. The zip itself must fit your server's Discord upload limit (10 MB without boosts). Screenshots barely compress, so large sets may need splitting across several zips in `/ingest batch`. Progress is posted as a channel message, and results that finish after Discord's 15-minute interaction window are posted to the channel with a mention.
+**Zip uploads.** `/ingest zip` (and `/ingest batch` and `!ingestimage`) accept `.zip` archives of screenshots. Images are processed in filename order, and folders, `__MACOSX/`, dotfiles and non-image files are skipped. Limits: 50 images per run, 20 MB per image and 200 MB in total after unzipping. The zip itself must fit your server's Discord upload limit (10 MB without boosts). Screenshots barely compress, so large sets may need splitting across several zips in `/ingest batch`. Progress is posted as a channel message, and results that finish after Discord's 15-minute interaction window are posted to the channel with a mention.
 
 ### Reports
 | Command | Description |
@@ -136,15 +136,9 @@ The planner is a separate static site (repo `territory-planner`, hosted on Cloud
 
 Prefix equivalents use `COMMAND_PREFIX` (default `!`), e.g. `!addversus`, `!addarena`, `!addkills`, `!reportweek`. `!ingestimage <dataset> [week]` requires the dataset.
 
-## OCR channel auto-ingest
+## Dataset is always named
 
-Set `OCR_CHANNEL_ID` to a Discord channel ID. Images posted there are parsed automatically (up to **10** images per message — Discord’s attachment limit). `.zip` files posted there are unpacked too (up to **50** images). For more across messages, use `/ingest batch`.
-
-The message text must start with the dataset; uploads without one get a reply asking for it:
-- `versus` / `tech` / `general` / `power` / `arena` / `kills`
-- second token can be a week (`current`, `last`, or `YYYY-MM-DD`)
-
-Example: `kills current` + attach kills leaderboard screenshots.
+Every image import names its dataset: `versus`, `tech`, `general`, `power`, `arena` or `kills`. There is no channel that reads posted screenshots automatically; use `/ingest image`, `/ingest zip` or `/ingest batch`.
 
 ### Screenshot types
 

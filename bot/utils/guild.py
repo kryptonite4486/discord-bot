@@ -57,10 +57,6 @@ def channel_id_from_context(ctx: commands.Context) -> str:
     return str(ctx.channel.id)
 
 
-def channel_id_from_message(message: discord.Message) -> str:
-    return str(message.channel.id)
-
-
 def channel_display_name(
     guild: discord.Guild | None,
     channel_id: str | None,

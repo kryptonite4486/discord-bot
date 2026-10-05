@@ -27,7 +27,6 @@ from bot.utils.archive import (
 from bot.utils.guild import (
     channel_id_from_context,
     channel_id_from_interaction,
-    channel_id_from_message,
     guild_id_from_context,
     guild_id_from_interaction,
 )
@@ -92,7 +91,7 @@ class Ingest(commands.Cog):
             api_key=s.ocr_vision_api_key,
             timeout=s.ocr_vision_timeout,
         )
-        # Bot-wide OCR queue: every batch (slash, zip, batch, auto-OCR channel)
+        # Bot-wide OCR queue: every batch (slash, zip, batch, prefix)
         # waits here, so the vision server only sees OCR_MAX_CONCURRENCY
         # batches at a time no matter how many uploads arrive together.
         self._ocr_gate = asyncio.Semaphore(s.ocr_max_concurrency)
@@ -1045,68 +1044,6 @@ class Ingest(commands.Cog):
             return "\n".join(lines), count, names, alerts
         finally:
             tmp_path.unlink(missing_ok=True)
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-        """Auto-OCR images posted in the configured OCR channel."""
-        if message.author.bot:
-            return
-        if message.guild is None:
-            return
-        channel_id = self.bot.settings.ocr_channel_id
-        if not channel_id or message.channel.id != channel_id:
-            return
-        if not message.attachments:
-            return
-
-        uploads = self._filter_uploads(list(message.attachments))
-        if not uploads:
-            return
-
-        guild_id = str(message.guild.id)
-        msg_channel_id = channel_id_from_message(message)
-        hint = (message.content or "").strip().split()
-        kind = hint[0].lower() if hint else ""
-        if kind not in DATASET_KINDS:
-            await message.reply(
-                "Which dataset is this? Re-post with the type as the first word "
-                f"of the message: `{DATASET_USAGE}` "
-                "(optionally followed by a week, e.g. `kills current`)."
-            )
-            return
-        week = None
-        if len(hint) >= 2:
-            try:
-                week = parse_week_start(hint[1])
-            except ValueError:
-                week = None
-
-        week_start = week or self._default_week(None)
-        sources, notes = await self._load_sources(uploads)
-        sources = self._cap_sources(sources)
-        if not sources:
-            await message.reply("\n".join(notes) or "No images found.")
-            return
-        label = (
-            f"Processing **{len(sources)}** image(s) with OCR for week `{week_start}`"
-        )
-        status = await message.reply(
-            f"{label}…\n"
-            f"_For more across several messages, use `/ingest batch` "
-            f"or upload a `.zip`._"
-        )
-        summary = await self._process_attachments(
-            sources,
-            kind,
-            week_start,
-            guild_id,
-            msg_channel_id,
-            progress=self._progress_editor(status, label),
-            notes=notes,
-        )
-        if len(summary) > 1900:
-            summary = summary[:1900] + "\n…"
-        await status.edit(content=summary)
 
     @commands.command(name="ingestimage")
     async def ingest_image_prefix(
