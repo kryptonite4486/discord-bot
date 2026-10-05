@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.cogs import data as data_cog  # noqa: E402
+from bot.cogs.admin import Admin  # noqa: E402
 from bot.cogs.data import Data  # noqa: E402
 from bot.utils.retention import (  # noqa: E402
     RemovedServer,
@@ -329,10 +330,23 @@ class ReportAndHandlerTests(unittest.TestCase):
         # The bot-wide handler skips these so users don't get two error replies.
         settings = SimpleNamespace(bot_owner_ids=frozenset(), control_guild_id=1, data_retention_days=30)
         bot = SimpleNamespace(settings=settings)
-        for cog in (Ops(bot), Data(bot)):  # type: ignore[arg-type]
+        for cog in (Ops(bot), Data(bot), Admin(bot)):  # type: ignore[arg-type]
             for command in cog.walk_app_commands():
                 if hasattr(command, "_has_any_error_handlers"):
                     self.assertTrue(command._has_any_error_handlers(), command.qualified_name)
+
+    def test_admin_and_data_commands_require_administrator(self) -> None:
+        bot = SimpleNamespace(settings=SimpleNamespace())
+        for cog, group in ((Admin(bot), "admin"), (Data(bot), "data")):  # type: ignore[arg-type]
+            (top,) = cog.get_app_commands()
+            self.assertEqual(top.name, group)
+            # Hidden from members without Administrator...
+            self.assertTrue(top.default_permissions.administrator, group)
+            # ...and refused if a server widens who can see it.
+            for command in top.walk_commands():
+                self.assertTrue(command.checks, command.qualified_name)
+        prefix = {c.name: c for c in Admin(bot).get_commands()}  # type: ignore[arg-type]
+        self.assertTrue(prefix["dbstats"].checks)
 
 
 if __name__ == "__main__":

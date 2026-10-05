@@ -15,7 +15,7 @@ Data is stored **per Discord server + channel**. Commands only work in a server
 (DMs unsupported).
 
 ```
-Admin
+Admin (server administrators only)
   /admin stats           Datastore stats (this channel; scope:server for all)
   /admin duplicates      List player names stored under several spellings
   /admin rename-player   Move a player's rows to the correct spelling

@@ -90,6 +90,9 @@ docker compose up --build -d
 ## Commands
 
 ### Admin (server administrators; affects only this server)
+
+`/admin` and `/data` are hidden from members without Administrator, and each command also checks the permission, so widening access under Server Settings → Integrations doesn't let others run them. `!dbstats` requires Administrator too.
+
 | Command | Description |
 |---------|-------------|
 | `/admin stats` | Datastore stats |

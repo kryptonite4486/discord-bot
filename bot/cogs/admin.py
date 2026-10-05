@@ -102,7 +102,13 @@ class Admin(commands.Cog):
         except Exception:
             log.exception("Scheduled database backup failed")
 
-    admin = app_commands.Group(name="admin", description="Bot administration")
+    # Hidden from members without Administrator; each command checks too, in
+    # case a server widens access under Server Settings → Integrations.
+    admin = app_commands.Group(
+        name="admin",
+        description="Server administration",
+        default_permissions=discord.Permissions(administrator=True),
+    )
 
     async def _player_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -262,6 +268,7 @@ class Admin(commands.Cog):
         scope="This channel (default) or entire server",
     )
     @app_commands.choices(scope=SCOPE_CHOICES)
+    @app_commands.checks.has_permissions(administrator=True)
     async def stats(
         self,
         interaction: discord.Interaction,
@@ -332,8 +339,7 @@ class Admin(commands.Cog):
         embed.add_field(name="By Metric", value=by_metric, inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @stats.error
-    async def admin_error(
+    async def cog_app_command_error(
         self,
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
@@ -353,6 +359,7 @@ class Admin(commands.Cog):
             await interaction.response.send_message(text, ephemeral=True)
 
     @commands.command(name="dbstats")
+    @commands.has_permissions(administrator=True)
     async def stats_prefix(self, ctx: commands.Context, scope: str = "channel") -> None:
         """Datastore stats. Usage: !dbstats [channel|server]"""
         guild_id = guild_id_from_context(ctx)
