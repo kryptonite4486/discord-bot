@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from bot.utils.backup import create_backup, last_backup_time
+from bot.utils.command_sync import clear_guild_copies, sync_dev_guild, sync_global
 from bot.utils.names import group_variants
 from bot.utils.parsing import chunk_message
 from bot.utils.guild import (
@@ -133,6 +134,29 @@ def format_variant_report(
         "Add `scope:Entire server` to fix every channel at once. A backup is taken "
         "first; conflicts stop the rename unless you pick how to resolve them.",
     ]
+    return "\n".join(lines)
+
+
+async def run_command_sync(
+    bot: commands.Bot, guilds: list[discord.Guild]
+) -> str:
+    """Register commands globally and remove duplicate per-server copies.
+
+    With DEV_GUILD_ID set, only the dev server is synced (instant updates).
+    """
+    dev_id = bot.settings.dev_guild_id
+    if dev_id:
+        count = await sync_dev_guild(bot.tree, dev_id)
+        return f"Synced **{count}** commands to the dev server only (`DEV_GUILD_ID`)."
+    count = await sync_global(bot.tree)
+    lines = [
+        f"Synced **{count}** global commands (changes can take a few minutes to "
+        "appear; restart Discord if they don't)."
+    ]
+    cleared = await clear_guild_copies(bot.tree, guilds)
+    if cleared:
+        names = ", ".join(f"**{g.name}**" for g in cleared)
+        lines.append(f"Removed duplicate command copies from {names}.")
     return "\n".join(lines)
 
 
@@ -379,13 +403,12 @@ class Admin(commands.Cog):
 
     @admin.command(name="sync", description="Sync slash commands with Discord")
     @app_commands.describe(
-        scope="Where to register commands (this server is instant; global can take up to 1 hour)",
+        scope="Which servers to clean of duplicate command copies (commands themselves are global)",
     )
     @app_commands.choices(
         scope=[
-            app_commands.Choice(name="This server (instant)", value="guild"),
-            app_commands.Choice(name="All servers the bot is in (instant)", value="all"),
-            app_commands.Choice(name="Global (can take up to 1 hour)", value="global"),
+            app_commands.Choice(name="This server", value="guild"),
+            app_commands.Choice(name="All servers the bot is in", value="all"),
         ]
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -398,27 +421,9 @@ class Admin(commands.Cog):
         guild = interaction.guild
         assert guild is not None
         mode = scope.value if scope else "guild"
+        guilds = list(self.bot.guilds) if mode == "all" else [guild]
         try:
-            if mode == "global":
-                synced = await self.bot.tree.sync()
-                msg = f"Synced **{len(synced)}** global commands (may take up to ~1 hour to appear everywhere)."
-            elif mode == "all":
-                synced_g = await self.bot.tree.sync()
-                counts: list[str] = [f"global: {len(synced_g)}"]
-                for g in list(self.bot.guilds):
-                    self.bot.tree.copy_global_to(guild=g)
-                    synced = await self.bot.tree.sync(guild=g)
-                    counts.append(f"{g.name}: {len(synced)}")
-                msg = "Synced commands:\n" + "\n".join(f"• {c}" for c in counts)
-            else:
-                # Refresh global too so clients are not stuck on a stale global schema.
-                await self.bot.tree.sync()
-                self.bot.tree.copy_global_to(guild=guild)
-                synced = await self.bot.tree.sync(guild=guild)
-                msg = (
-                    f"Synced global + **{len(synced)}** commands to "
-                    f"**{guild.name}** (guild is instant; global may lag)."
-                )
+            msg = await run_command_sync(self.bot, guilds)
         except Exception as exc:
             log.exception("Command sync failed")
             await interaction.followup.send(f"Sync failed: `{exc}`", ephemeral=True)
@@ -540,30 +545,13 @@ class Admin(commands.Cog):
     @commands.command(name="sync")
     @commands.has_permissions(administrator=True)
     async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
-        """Sync slash commands. Usage: !sync [guild|all|global] — run !sync in a new server to register commands instantly."""
+        """Sync slash commands. Usage: !sync [guild|all] — all also cleans duplicate copies in every server."""
         assert ctx.guild is not None
         mode = (scope or "guild").strip().lower()
-        if mode in {"all", "every", "guilds"}:
-            synced_g = await self.bot.tree.sync()
-            lines = [f"• global: {len(synced_g)}"]
-            for g in list(self.bot.guilds):
-                self.bot.tree.copy_global_to(guild=g)
-                synced = await self.bot.tree.sync(guild=g)
-                lines.append(f"• {g.name}: {len(synced)}")
-            await ctx.reply("Synced:\n" + "\n".join(lines))
-            return
-        if mode in {"global", "globals"}:
-            synced = await self.bot.tree.sync()
-            await ctx.reply(
-                f"Synced **{len(synced)}** global commands (may take up to ~1 hour)."
-            )
-            return
-        await self.bot.tree.sync()
-        self.bot.tree.copy_global_to(guild=ctx.guild)
-        synced = await self.bot.tree.sync(guild=ctx.guild)
-        await ctx.reply(
-            f"Synced global + **{len(synced)}** commands to **{ctx.guild.name}**."
-        )
+        all_guilds = mode in {"all", "every", "guilds"}
+        guilds = list(self.bot.guilds) if all_guilds else [ctx.guild]
+        await ctx.reply(await run_command_sync(self.bot, guilds))
+
     @commands.command(name="dbstats")
     async def stats_prefix(self, ctx: commands.Context, scope: str = "channel") -> None:
         """Datastore stats. Usage: !dbstats [channel|server]"""

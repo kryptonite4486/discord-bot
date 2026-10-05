@@ -93,7 +93,7 @@ docker compose up --build -d
 | Command | Description |
 |---------|-------------|
 | `/admin reload <cog>` | Reload a cog |
-| `/admin sync` | Sync slash commands |
+| `/admin sync [scope]` | Register slash commands globally and remove duplicate per-server copies (this server, or all servers) |
 | `/admin stats` | Datastore stats |
 
 ### Ingestion
@@ -229,4 +229,4 @@ docker-compose.yml
 3. Privileged Gateway Intent: **Message Content Intent** = ON
 4. OAuth2 URL Generator: scopes `bot` + `applications.commands`
 5. Permissions: Send Messages, Embed Links, Attach Files, Read Message History, Use Application Commands
-6. After first start, run `/admin sync` in your server if commands are missing (or set `DEV_GUILD_ID` for instant guild sync)
+6. Commands register globally on every start. If they are missing or listed twice, run `/admin sync` (or `!sync all`). Set `DEV_GUILD_ID` only on a development bot: commands then go to that one server instead, for instant updates
