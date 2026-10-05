@@ -83,6 +83,7 @@ class Settings:
     message_content_intent: bool
     backup_dir: Path | None
     backup_keep: int
+    data_retention_days: int
     allow_unmounted_data: bool
     planner_url: str = DEFAULT_PLANNER_URL
 
@@ -127,6 +128,8 @@ class Settings:
                 else None
             ),
             backup_keep=max(1, _optional_int("BACKUP_KEEP") or 14),
+            # Days a removed server's data is kept in case the bot is re-added.
+            data_retention_days=max(1, _optional_int("DATA_RETENTION_DAYS") or 30),
             allow_unmounted_data=_env_bool("ALLOW_UNMOUNTED_DATA", False),
             planner_url=(
                 os.getenv("PLANNER_URL", "").strip().rstrip("/") or DEFAULT_PLANNER_URL

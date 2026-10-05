@@ -19,6 +19,7 @@ Admin
   /admin stats           Datastore stats (this channel; scope:server for all)
   /admin duplicates      List player names stored under several spellings
   /admin rename-player   Move a player's rows to the correct spelling
+  /data delete           Permanently delete this channel's (or server's) data
 
 Add / Ingest
   /add versus       Add Versus Points for a player

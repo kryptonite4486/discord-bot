@@ -1,4 +1,4 @@
-"""Operator-only commands: reload, sync, backup, queue, usage.
+"""Operator-only commands: reload, sync, backup, queue, purges, usage.
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -20,6 +20,7 @@ from discord.ext import commands
 from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
 from bot.utils.fair_queue import GuildQueueState
+from bot.utils.retention import RemovedServer, removed_servers
 
 log = logging.getLogger(__name__)
 
@@ -55,9 +56,16 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.names",
         "bot.utils.parsing",
     ),
+    "bot.cogs.data": (
+        "bot.db.database",
+        "bot.utils.backup",
+        "bot.utils.guild",
+        "bot.utils.retention",
+    ),
     "bot.cogs.ops": (
         "bot.utils.backup",
         "bot.utils.command_sync",
+        "bot.utils.retention",
     ),
 }
 
@@ -207,6 +215,31 @@ def format_queue_report(
     return "\n".join(lines)
 
 
+def format_purges_report(servers: list[RemovedServer], retention_days: int) -> str:
+    """Servers that removed the bot and when their data will be deleted."""
+    head = (
+        f"**Removed servers** (data is kept {retention_days} day(s) after the bot is "
+        "removed or the subscription ends, whichever is later; adding the bot back "
+        "cancels the deletion)"
+    )
+    if not servers:
+        return head + "\nNone."
+    # Soonest deletion first; servers kept by a subscription last.
+    ordered = sorted(
+        servers, key=lambda r: (r.deletes_at is None, r.deletes_at or r.removed_at)
+    )
+    lines = [head, "```", f"{'Server ID':<20} {'Removed (UTC)':<16} {'Deletes (UTC)':<16}"]
+    for r in ordered[:MAX_USAGE_ROWS]:
+        deletes = (
+            r.deletes_at.strftime("%Y-%m-%d %H:%M") if r.deletes_at else "kept: subscribed"
+        )
+        lines.append(f"{r.guild_id:<20} {r.removed_at:%Y-%m-%d %H:%M} {deletes:<16}")
+    if len(ordered) > MAX_USAGE_ROWS:
+        lines.append(f"…and {len(ordered) - MAX_USAGE_ROWS} more")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def is_operator(bot: commands.Bot, user_id: int) -> bool:
     return user_id in bot.settings.bot_owner_ids
 
@@ -333,6 +366,16 @@ class Ops(commands.Cog):
             ephemeral=True,
         )
 
+    @ops.command(name="purges", description="Servers that removed the bot and when their data will be deleted")
+    async def purges(self, interaction: discord.Interaction) -> None:
+        days = self.bot.settings.data_retention_days
+        servers = await removed_servers(
+            self.bot.db, timedelta(days=days), datetime.now(timezone.utc)
+        )
+        await interaction.response.send_message(
+            format_purges_report(servers, days), ephemeral=True
+        )
+
     @ops.command(name="usage", description="OCR usage per server (images, OCR time, queue wait)")
     @app_commands.describe(days="How many days back, including today (default 7)")
     async def usage(
@@ -366,7 +409,7 @@ async def setup(bot: commands.Bot) -> None:
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup, queue, usage) are disabled"
+            "(/ops reload, sync, backup, queue, purges, usage) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

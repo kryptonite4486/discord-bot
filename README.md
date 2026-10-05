@@ -95,6 +95,7 @@ docker compose up --build -d
 | `/admin stats` | Datastore stats |
 | `/admin duplicates` | List player names stored under several spellings |
 | `/admin rename-player` | Move a player's rows to the correct spelling |
+| `/data delete [scope]` | Permanently delete this channel's metrics, or the entire server's with `scope:Entire server`. Shows what will be deleted and asks for confirmation; a backup is taken first |
 
 ### Operator (`/ops`)
 These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and the `/ops` group appears only in the private `CONTROL_GUILD_ID` server. If either variable is unset, `/ops` is disabled.
@@ -105,6 +106,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops sync` | Register commands globally, `/ops` in the control server, and remove duplicate per-server copies everywhere |
 | `/ops backup` | Write a database backup now |
 | `/ops queue` | Live OCR queue: requests running and waiting per server, and how long the oldest has waited |
+| `/ops purges` | Servers that removed the bot and when their data will be deleted |
 | `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
 
 `!reload <cog>` and `!sync` do the same from any server, for operators only.
@@ -184,6 +186,18 @@ WeeklyMetrics (
   PRIMARY KEY (GuildId, ChannelId, WeekStart, PlayerName, MetricType)
 )
 ```
+
+### Data retention and deletion
+
+When the bot is removed from a server (kicked, banned, or the server deleted), that server's metrics are **kept for `DATA_RETENTION_DAYS` (default 30) days**, then deleted. Adding the bot back within that window cancels the deletion and all history is still there, so removing it by accident loses nothing.
+
+**Subscriptions extend this.** While the server has an active subscription (paid, gifted or trial, from `GuildEntitlement`), its data is kept however long the bot has been gone. The 30 days start from the later of the removal and the end of the last subscription, so a subscription that lapses while the bot is removed starts the clock on the day it lapses.
+
+`PendingPurge (GuildId, RemovedAt)` records removals; the deletion date is worked out from it and the server's subscriptions at each hourly check, so renewals and cancellations apply without rescheduling. A backup is taken before each scheduled deletion, and if the backup fails the deletion waits for the next hour. Servers that removed the bot while it was offline are found at startup and treated as removed from then. `/ops purges` lists removed servers and their deletion dates ("kept: subscribed" while a subscription is active).
+
+Server admins can delete data immediately with `/data delete` (one channel, or the whole server).
+
+Deleted data still exists in backups until they rotate out: daily backups are kept for `BACKUP_KEEP` days, and the newest 10 manual backups (which include the safety copies taken before deletions) are kept regardless of age. Usage counters (`UsageLedger`) are not deleted; they hold only per-day counts, no player data.
 
 OCR usage is counted per server in `UsageLedger (GuildId, Day, Kind, Amount)`, one row per UTC day per measure: `ocr_batches`, `ocr_images` (every image sent to the vision model, failed ones included), `ocr_failed`, `ocr_seconds` and `ocr_wait_seconds` (time batches spent queued behind other batches). Nothing is limited yet; `/ops usage` reports it.
 

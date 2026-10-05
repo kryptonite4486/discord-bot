@@ -26,7 +26,7 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 3. ✅ *Counting done 2026-10-05 (`UsageLedger`, `/ops usage`); enforcement comes with tiers.* **Usage metering** (`UsageLedger`): per-server counters per UTC day for OCR batches, images sent to the model, failures, OCR seconds and queue-wait seconds, written once each batch finishes. Daily rows add up to weekly quotas and also show peak days. This drives quotas and tells you your real costs.
 4. ✅ *Fair turns done 2026-10-05 (`bot/utils/fair_queue.py`): servers take turns one whole request at a time; the paid priority lane comes with tiers.* **Fair OCR queue.** Replace the single FIFO semaphore with per-guild queues and a scheduler that serves guilds round-robin, with a priority lane for paid tiers. Otherwise one free server's 50-image zip blocks a paying customer.
 5. **Privacy Policy and Terms of Service**, published at stable URLs. They need to cover what is stored (player names and game stats, *not* Discord user data), how long it's kept, and how to request deletion.
-6. **Data deletion:** `/data delete` (server admin, with confirmation) and a removal job. When the bot leaves a guild (`on_guild_remove`), mark the guild and purge its data after a grace period (e.g. 30 days).
+6. ✅ *Done 2026-10-05: 30-day retention after removal (`DATA_RETENTION_DAYS`), cancelled if the bot is re-added; kept indefinitely while a subscription (paid, gift or trial) is active, with the 30 days starting when it ends; `/data delete` for admins; `/ops purges`. Open for item 5: manual backups are kept by count, not age, so deleted data can linger in them.* **Data deletion:** `/data delete` (server admin, with confirmation) and a removal job. When the bot leaves a guild (`on_guild_remove`), mark the guild and purge its data after a grace period (e.g. 30 days).
 7. **Remove the Message Content intent dependency.** Discord requires approval for this privileged intent once a bot is in 100+ servers, and verification starts at 75. The auto-OCR channel has been dropped, so two things still depend on it:
    - `/ingest batch` reads images and `done` from ordinary messages. Change it to collect only messages that @mention the bot, which Discord delivers without the intent.
    - Prefix commands (`!addversus`, `!ingestimage`, …). Retire them in favour of slash commands, or keep them only for messages that @mention the bot.
@@ -128,6 +128,8 @@ CREATE TABLE EntitlementAudit (
 ```
 
 The **effective tier** is the highest tier among a guild's active entitlements (not revoked, `StartsAt <= now`, and `EndsAt` empty or in the future), falling back to free. Because of this, a gift and a paid subscription can overlap without conflict, and a lapsed subscription falls back to the gift automatically.
+
+The `GuildEntitlement` table already exists (created 2026-10-05 for data retention); billing and gifting still need to write to it.
 
 ### Code layout
 - `bot/utils/tiers.py`: a `TierPolicy` dataclass per tier (quotas, retention weeks, feature flags) and `async effective_tier(guild_id)` with a cache of about 60 seconds, cleared when an entitlement event arrives.

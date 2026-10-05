@@ -47,6 +47,33 @@ CREATE INDEX IF NOT EXISTS idx_weekly_week
 CREATE INDEX IF NOT EXISTS idx_weekly_unassigned
     ON WeeklyMetrics (GuildId, ChannelId);
 
+-- Servers that removed the bot. The deletion date isn't stored: it depends
+-- on subscriptions, which can change (see bot/cogs/data.py). Times are UTC
+-- 'YYYY-MM-DD HH:MM:SS'.
+CREATE TABLE IF NOT EXISTS PendingPurge (
+    GuildId   TEXT PRIMARY KEY,
+    RemovedAt TEXT NOT NULL
+);
+
+-- Paid subscriptions, gifts and trials per server (docs/monetization-plan.md
+-- section 5). Active: not revoked, started, and EndsAt empty or in the future.
+CREATE TABLE IF NOT EXISTS GuildEntitlement (
+    Id          INTEGER PRIMARY KEY,
+    GuildId     TEXT NOT NULL,
+    Tier        TEXT NOT NULL,  -- 'mid' | 'full'
+    Source      TEXT NOT NULL,  -- 'discord' | 'stripe' | 'gift' | 'trial' | 'code'
+    ExternalId  TEXT,
+    StartsAt    TEXT NOT NULL,
+    EndsAt      TEXT,           -- NULL = no expiry
+    GrantedBy   TEXT,
+    Reason      TEXT,
+    RevokedAt   TEXT,
+    CreatedAt   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ent_guild
+    ON GuildEntitlement (GuildId, RevokedAt, EndsAt);
+
 -- Per-server usage, one row per UTC day and measure (see USAGE_KINDS).
 CREATE TABLE IF NOT EXISTS UsageLedger (
     GuildId TEXT NOT NULL,
@@ -972,3 +999,96 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [(str(r["Day"]), float(r["total"])) for r in rows]
+
+    async def delete_guild_data(
+        self, guild_id: str, *, channel_id: str | None = None
+    ) -> int:
+        """Delete a server's metrics (one channel, or all of them); return rows removed.
+
+        Usage counters are kept: they hold only counts per day, no player data.
+        """
+        if not guild_id:
+            raise ValueError("GuildId cannot be empty")
+        sql = "DELETE FROM WeeklyMetrics WHERE GuildId = ?"
+        params: tuple[str, ...] = (guild_id,)
+        if channel_id is not None:
+            sql += " AND ChannelId = ?"
+            params = (guild_id, channel_id)
+        async with self._write_lock:
+            cursor = await self.conn.execute(sql, params)
+            await self.conn.commit()
+        return cursor.rowcount
+
+    async def guilds_with_data(self) -> set[str]:
+        async with self.conn.execute(
+            "SELECT DISTINCT GuildId FROM WeeklyMetrics"
+        ) as cursor:
+            return {str(r["GuildId"]) for r in await cursor.fetchall()}
+
+    async def schedule_purge(self, guild_id: str, removed_at: str) -> bool:
+        """Record that the bot was removed; False if already recorded.
+
+        An existing record is kept, so a restart can't push the date back.
+        """
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO PendingPurge (GuildId, RemovedAt)
+                VALUES (?, ?)
+                ON CONFLICT(GuildId) DO NOTHING
+                """,
+                (guild_id, removed_at),
+            )
+            await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def cancel_purge(self, guild_id: str) -> bool:
+        """Forget a removal (the bot is back); True if one was recorded."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                "DELETE FROM PendingPurge WHERE GuildId = ?", (guild_id,)
+            )
+            await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def pending_purges(self) -> list[dict[str, str]]:
+        """Servers that removed the bot, earliest removal first."""
+        async with self.conn.execute(
+            "SELECT GuildId, RemovedAt FROM PendingPurge ORDER BY RemovedAt"
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def subscription_status(self, guild_id: str, now: str) -> tuple[bool, str | None]:
+        """(has an active subscription, when the last one ended).
+
+        Any entitlement counts: paid, gifted or trial. The end of an inactive
+        one is the earlier of EndsAt and RevokedAt (never later than ``now``).
+        """
+        async with self.conn.execute(
+            """
+            SELECT
+              MAX(RevokedAt IS NULL AND StartsAt <= :now
+                  AND (EndsAt IS NULL OR EndsAt > :now)) AS active,
+              MAX(MIN(COALESCE(EndsAt, :now), COALESCE(RevokedAt, :now), :now))
+                  AS ended
+            FROM GuildEntitlement
+            WHERE GuildId = :guild AND StartsAt <= :now
+            """,
+            {"guild": guild_id, "now": now},
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or row["active"] is None:
+            return False, None
+        return bool(row["active"]), row["ended"]
+
+    async def purge_guild(self, guild_id: str) -> int:
+        """Delete a server's metrics and clear its schedule; return rows removed."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                "DELETE FROM WeeklyMetrics WHERE GuildId = ?", (guild_id,)
+            )
+            await self.conn.execute(
+                "DELETE FROM PendingPurge WHERE GuildId = ?", (guild_id,)
+            )
+            await self.conn.commit()
+        return cursor.rowcount

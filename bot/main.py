@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 COGS = (
     "bot.cogs.admin",
+    "bot.cogs.data",
     "bot.cogs.help_cmd",
     "bot.cogs.ingest",
     "bot.cogs.ops",
@@ -138,6 +139,13 @@ class WeeklyMetricsBot(commands.Bot):
         error: discord.app_commands.AppCommandError,
     ) -> None:
         """Ensure deferred slash commands always get a visible failure reply."""
+        # discord.py calls this after a command's or cog's own error handler;
+        # those reply themselves, so a second "Command failed" would duplicate.
+        command = interaction.command
+        if isinstance(command, discord.app_commands.Command) and (
+            command._has_any_error_handlers()
+        ):
+            return
         log.exception("App command error in %s: %s", interaction.command, error)
         text = f"Command failed: `{error}`"
         try:
