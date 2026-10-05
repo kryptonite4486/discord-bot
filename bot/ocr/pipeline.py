@@ -63,6 +63,7 @@ def extract_metrics_from_image(
     *,
     kind: DatasetKind,
     ocr: VisionOCR,
+    source_name: str | None = None,
 ) -> OCRResult:
     """
     Run vision OCR and parse into WeeklyMetrics-ready rows.
@@ -92,4 +93,5 @@ def extract_metrics_from_image(
         model=ocr.model,
         api_key=ocr.api_key,
         timeout=ocr.timeout,
+        source_name=source_name,
     )

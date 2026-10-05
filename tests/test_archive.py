@@ -68,7 +68,18 @@ class ExtractTests(unittest.TestCase):
         )
         images, warnings = _extract(data)
         self.assertEqual([i.filename for i in images], ["shots.zip/week1/one.png"])
-        self.assertIn("Skipped 4 non-image file(s)", warnings[0])
+        # Only notes.txt is worth mentioning; macOS metadata and hidden files are silent.
+        self.assertEqual(warnings, ["Skipped 1 non-image file(s) in `shots.zip`."])
+
+    def test_finder_zip_has_no_false_warning(self) -> None:
+        # Finder's "Compress" adds a __MACOSX/._name metadata file per image.
+        members = {}
+        for n in range(3):
+            members[f"vs/vs_{n}.png"] = _png()
+            members[f"__MACOSX/vs/._vs_{n}.png"] = b"\0\5\26\7"
+        images, warnings = _extract(_zip(members))
+        self.assertEqual(len(images), 3)
+        self.assertEqual(warnings, [])
 
     def test_path_traversal_entries_skipped(self) -> None:
         data = _zip({"../../evil.png": _png(), "ok.png": _png()})

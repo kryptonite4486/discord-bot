@@ -12,6 +12,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from bot.utils.backup import create_backup, last_backup_time
+from bot.utils.names import group_variants
+from bot.utils.parsing import chunk_message
 from bot.utils.guild import (
     channel_id_from_context,
     channel_id_from_interaction,
@@ -48,8 +50,11 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.parsing",
     ),
     "bot.cogs.admin": (
+        "bot.db.database",
         "bot.utils.guild",
         "bot.utils.backup",
+        "bot.utils.names",
+        "bot.utils.parsing",
     ),
 }
 
@@ -85,6 +90,51 @@ def _reload_dependencies(extension: str, bot: commands.Bot | None = None) -> lis
 
 BACKUP_INTERVAL = timedelta(hours=24)
 
+CONFLICT_CHOICES = [
+    app_commands.Choice(name="Stop and list conflicts (default)", value="stop"),
+    app_commands.Choice(name="Keep the new name's value", value="keep_target"),
+    app_commands.Choice(name="Use the old name's value", value="keep_source"),
+]
+# Follow-up messages per report; Discord rate-limits long bursts.
+MAX_REPORT_MESSAGES = 6
+
+
+def format_variant_report(
+    groups: list[list[dict]],
+    conflicts: list[list[dict]],
+    *,
+    server_scope: bool,
+) -> str:
+    """Numbered list of name variants with row counts, weeks and conflicts."""
+    where = "this server" if server_scope else "this channel"
+    if not groups:
+        return f"No duplicate player names found in {where}."
+    lines = [
+        f"**{len(groups)} player name(s) with variant spellings in {where}** "
+        "(most rows first; the first is the suggested spelling):",
+        "",
+    ]
+    for n, (group, clashes) in enumerate(zip(groups, conflicts), start=1):
+        spellings = " · ".join(
+            f"`{r['PlayerName']}` ({r['Rows']} rows, {r['FirstWeek']}→{r['LastWeek']})"
+            for r in group
+        )
+        channel = f"<#{group[0]['ChannelId']}> " if server_scope else ""
+        lines.append(f"**{n}.** {channel}{spellings}")
+        if clashes:
+            shown = "; ".join(
+                f"{c['WeekStart']} {c['MetricType']}: {c['ValuesByName']}" for c in clashes[:3]
+            )
+            more = f" (+{len(clashes) - 3} more)" if len(clashes) > 3 else ""
+            lines.append(f"   ⚠️ {len(clashes)} conflict(s): {shown}{more}")
+    lines += [
+        "",
+        "Fix one with `/admin rename-player old_name:<misread> new_name:<correct>`. "
+        "Add `scope:Entire server` to fix every channel at once. A backup is taken "
+        "first; conflicts stop the rename unless you pick how to resolve them.",
+    ]
+    return "\n".join(lines)
+
 
 class Admin(commands.Cog):
     """Bot administration: reload, sync, stats, backups."""
@@ -115,6 +165,159 @@ class Admin(commands.Cog):
             log.exception("Scheduled database backup failed")
 
     admin = app_commands.Group(name="admin", description="Bot administration")
+
+    async def _player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        names = await self.bot.db.list_players(guild_id_from_interaction(interaction))
+        needle = current.casefold()
+        matches = [n for n in names if needle in n.casefold()][:25]
+        return [app_commands.Choice(name=n[:100], value=n[:100]) for n in matches]
+
+    @admin.command(
+        name="duplicates",
+        description="List player names stored under several spellings (OCR misreads)",
+    )
+    @app_commands.describe(scope="This channel (default) or entire server")
+    @app_commands.choices(scope=SCOPE_CHOICES)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def duplicates(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild_id = guild_id_from_interaction(interaction)
+        server_scope = bool(scope and scope.value == "server")
+        channel_id = None if server_scope else channel_id_from_interaction(interaction)
+        summary = await self.bot.db.player_name_summary(guild_id, channel_id=channel_id)
+        groups = group_variants(summary)
+        conflicts = [
+            await self.bot.db.name_conflicts(
+                guild_id,
+                [r["PlayerName"] for r in group],
+                channel_id=group[0]["ChannelId"],
+            )
+            for group in groups
+        ]
+        report = format_variant_report(groups, conflicts, server_scope=server_scope)
+        chunks = list(chunk_message(report))
+        for chunk in chunks[:MAX_REPORT_MESSAGES]:
+            await interaction.followup.send(chunk, ephemeral=True)
+        if len(chunks) > MAX_REPORT_MESSAGES:
+            await interaction.followup.send(
+                f"_…{len(chunks) - MAX_REPORT_MESSAGES} more message(s) not shown; "
+                "run it per channel to see the rest._",
+                ephemeral=True,
+            )
+
+    @admin.command(
+        name="rename-player",
+        description="Move a player's rows to another spelling (fix OCR misreads)",
+    )
+    @app_commands.describe(
+        old_name="Spelling to replace (e.g. the misread one)",
+        new_name="Correct spelling (existing player or a new name)",
+        scope="This channel (default) or entire server",
+        on_conflict="When both names have a value for the same week and metric",
+    )
+    @app_commands.choices(scope=SCOPE_CHOICES, on_conflict=CONFLICT_CHOICES)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def rename_player(
+        self,
+        interaction: discord.Interaction,
+        old_name: str,
+        new_name: str,
+        scope: app_commands.Choice[str] | None = None,
+        on_conflict: app_commands.Choice[str] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild_id = guild_id_from_interaction(interaction)
+        server_scope = bool(scope and scope.value == "server")
+        channel_id = None if server_scope else channel_id_from_interaction(interaction)
+        where = "this server" if server_scope else "this channel"
+        mode = on_conflict.value if on_conflict else "stop"
+
+        summary = await self.bot.db.player_name_summary(guild_id, channel_id=channel_id)
+        if not any(r["PlayerName"] == old_name for r in summary):
+            await interaction.followup.send(
+                f"No rows for `{old_name}` in {where}. Names are case-sensitive; "
+                "pick one from the suggestions or `/admin duplicates`.",
+                ephemeral=True,
+            )
+            return
+
+        backup_note = "⚠️ No backup taken (backups are disabled)."
+        if getattr(self.bot, "backups_enabled", False):
+            settings = self.bot.settings
+            try:
+                path = await create_backup(
+                    self.bot.db, settings.backup_dir, "manual", keep=settings.backup_keep
+                )
+            except Exception as exc:
+                log.exception("Backup before rename failed")
+                await interaction.followup.send(
+                    f"Rename cancelled: the safety backup failed (`{exc}`).",
+                    ephemeral=True,
+                )
+                return
+            backup_note = f"Backup saved first: `{path.name}`."
+
+        try:
+            result = await self.bot.db.rename_player(
+                guild_id, old_name, new_name, channel_id=channel_id, on_conflict=mode
+            )
+        except ValueError as exc:
+            await interaction.followup.send(f"Rename failed: {exc}", ephemeral=True)
+            return
+
+        conflicts = result["conflicts"]
+        if conflicts and mode == "stop":
+            shown = "\n".join(
+                f"• {c['WeekStart']} {c['MetricType']}"
+                + (f" <#{c['ChannelId']}>" if server_scope else "")
+                + f": {c['ValuesByName']}"
+                for c in conflicts[:10]
+            )
+            more = f"\n…and {len(conflicts) - 10} more" if len(conflicts) > 10 else ""
+            await interaction.followup.send(
+                f"Nothing changed: `{old_name}` and `{new_name}` both have values for "
+                f"{len(conflicts)} week/metric slot(s) in {where}:\n{shown}{more}\n"
+                "Run again with `on_conflict` set to keep one of them.",
+                ephemeral=True,
+            )
+            return
+
+        log.info(
+            "rename-player %r -> %r scope=%s by %s: %s",
+            old_name,
+            new_name,
+            "server" if server_scope else channel_id,
+            interaction.user,
+            {k: v for k, v in result.items() if k != "conflicts"},
+        )
+        details = [f"moved **{result['moved']}** row(s)"]
+        if result["dropped"]:
+            details.append(f"dropped {result['dropped']} conflicting `{old_name}` value(s)")
+        if result["replaced"]:
+            details.append(f"replaced {result['replaced']} `{new_name}` value(s)")
+        await interaction.followup.send(
+            f"Renamed `{old_name}` → `{new_name}` in {where}: {', '.join(details)}.\n"
+            f"{backup_note}",
+            ephemeral=True,
+        )
+
+    @rename_player.autocomplete("old_name")
+    async def _old_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._player_autocomplete(interaction, current)
+
+    @rename_player.autocomplete("new_name")
+    async def _new_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return await self._player_autocomplete(interaction, current)
 
     @admin.command(
         name="backup",

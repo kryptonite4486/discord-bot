@@ -48,13 +48,16 @@ def is_zip_upload(filename: str, content_type: str | None) -> bool:
     return PurePosixPath(filename).suffix.lower() == ".zip"
 
 
-def _skip_member(info: zipfile.ZipInfo) -> bool:
+def _is_junk(info: zipfile.ZipInfo) -> bool:
+    """Folders, hidden files and macOS metadata (Finder adds __MACOSX/ copies)."""
     if info.is_dir():
         return True
     parts = PurePosixPath(info.filename.replace("\\", "/")).parts
-    if any(p == "__MACOSX" or p.startswith(".") for p in parts):
-        return True
-    return not is_image_name(info.filename)
+    return any(p == "__MACOSX" or p.startswith(".") for p in parts)
+
+
+def _skip_member(info: zipfile.ZipInfo) -> bool:
+    return _is_junk(info) or not is_image_name(info.filename)
 
 
 def _is_valid_image(data: bytes) -> bool:
@@ -95,7 +98,8 @@ def extract_images_from_zip(
             (i for i in zf.infolist() if not _skip_member(i)),
             key=lambda i: i.filename.lower(),
         )
-        skipped = sum(1 for i in zf.infolist() if not i.is_dir()) - len(candidates)
+        # Only report files someone might expect to be read; junk is silent.
+        skipped = sum(1 for i in zf.infolist() if not _is_junk(i)) - len(candidates)
         if skipped:
             warnings.append(f"Skipped {skipped} non-image file(s) in `{archive_name}`.")
         if not candidates:

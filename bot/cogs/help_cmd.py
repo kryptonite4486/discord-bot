@@ -20,6 +20,8 @@ Admin
   /admin sync            Sync slash commands (Administrator)
   /admin stats           Datastore stats (this channel; scope:server for all)
   /admin backup          Save a database backup to the host backup folder now
+  /admin duplicates      List player names stored under several spellings
+  /admin rename-player   Move a player's rows to the correct spelling
 
 Add / Ingest
   /add versus       Add Versus Points for a player

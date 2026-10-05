@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -51,6 +52,10 @@ class Database:
         self.path = Path(path)
         self.legacy_guild_id = legacy_guild_id
         self._conn: aiosqlite.Connection | None = None
+        # The bot shares one connection; a commit from any coroutine commits all
+        # pending statements. Writers hold this lock across execute + commit so
+        # a multi-statement change (rename_player) can't be committed half-done.
+        self._write_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -230,26 +235,27 @@ class Database:
             raise ValueError("GuildId cannot be empty")
         channel_id = str(channel_id or UNASSIGNED_CHANNEL_ID)
 
-        await self.conn.execute(
-            """
-            INSERT INTO WeeklyMetrics
-                (GuildId, ChannelId, WeekStart, PlayerName, MetricType, Value, UpdatedAt)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(GuildId, ChannelId, WeekStart, PlayerName, MetricType)
-            DO UPDATE SET
-                Value = excluded.Value,
-                UpdatedAt = datetime('now')
-            """,
-            (
-                guild_id,
-                channel_id,
-                week_start,
-                player_name,
-                metric_type,
-                float(value),
-            ),
-        )
-        await self.conn.commit()
+        async with self._write_lock:
+            await self.conn.execute(
+                """
+                INSERT INTO WeeklyMetrics
+                    (GuildId, ChannelId, WeekStart, PlayerName, MetricType, Value, UpdatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(GuildId, ChannelId, WeekStart, PlayerName, MetricType)
+                DO UPDATE SET
+                    Value = excluded.Value,
+                    UpdatedAt = datetime('now')
+                """,
+                (
+                    guild_id,
+                    channel_id,
+                    week_start,
+                    player_name,
+                    metric_type,
+                    float(value),
+                ),
+            )
+            await self.conn.commit()
 
     async def upsert_metrics(
         self,
@@ -270,20 +276,162 @@ class Database:
         if not payload:
             return 0
 
-        await self.conn.executemany(
+        async with self._write_lock:
+            await self.conn.executemany(
+                """
+                INSERT INTO WeeklyMetrics
+                    (GuildId, ChannelId, WeekStart, PlayerName, MetricType, Value, UpdatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(GuildId, ChannelId, WeekStart, PlayerName, MetricType)
+                DO UPDATE SET
+                    Value = excluded.Value,
+                    UpdatedAt = datetime('now')
+                """,
+                payload,
+            )
+            await self.conn.commit()
+            return len(payload)
+
+    async def player_name_counts(self, guild_id: str, channel_id: str) -> dict[str, int]:
+        """Stored player names in one guild+channel with their row counts."""
+        async with self.conn.execute(
             """
-            INSERT INTO WeeklyMetrics
-                (GuildId, ChannelId, WeekStart, PlayerName, MetricType, Value, UpdatedAt)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(GuildId, ChannelId, WeekStart, PlayerName, MetricType)
-            DO UPDATE SET
-                Value = excluded.Value,
-                UpdatedAt = datetime('now')
+            SELECT PlayerName, count(*) AS n FROM WeeklyMetrics
+            WHERE GuildId = ? AND ChannelId = ?
+            GROUP BY PlayerName
             """,
-            payload,
+            (guild_id, str(channel_id)),
+        ) as cursor:
+            return {row["PlayerName"]: row["n"] async for row in cursor}
+
+    async def player_name_summary(
+        self, guild_id: str, *, channel_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Per channel+player: row count and first/last week (one channel or whole guild)."""
+        extra_sql, extra_params = self._channel_scope_sql(channel_id=channel_id)
+        async with self.conn.execute(
+            f"""
+            SELECT ChannelId, PlayerName, count(*) AS Rows,
+                   min(WeekStart) AS FirstWeek, max(WeekStart) AS LastWeek
+            FROM WeeklyMetrics
+            WHERE GuildId = ?{extra_sql}
+            GROUP BY ChannelId, PlayerName
+            """,
+            (guild_id, *extra_params),
+        ) as cursor:
+            return [dict(r) async for r in cursor]
+
+    async def name_conflicts(
+        self,
+        guild_id: str,
+        names: Sequence[str],
+        *,
+        channel_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """(channel, week, metric) slots where more than one of ``names`` has a value."""
+        if len(names) < 2:
+            return []
+        extra_sql, extra_params = self._channel_scope_sql(channel_id=channel_id)
+        placeholders = ",".join("?" * len(names))
+        async with self.conn.execute(
+            f"""
+            SELECT ChannelId, WeekStart, MetricType,
+                   group_concat(PlayerName || '=' || Value, ', ') AS ValuesByName
+            FROM WeeklyMetrics
+            WHERE GuildId = ? AND PlayerName IN ({placeholders}){extra_sql}
+            GROUP BY ChannelId, WeekStart, MetricType
+            HAVING count(*) > 1
+            ORDER BY WeekStart, ChannelId, MetricType
+            """,
+            (guild_id, *names, *extra_params),
+        ) as cursor:
+            return [dict(r) async for r in cursor]
+
+    async def rename_player(
+        self,
+        guild_id: str,
+        from_name: str,
+        to_name: str,
+        *,
+        channel_id: str | None = None,
+        on_conflict: str = "stop",
+    ) -> dict[str, Any]:
+        """
+        Move every row for ``from_name`` to ``to_name`` (one channel or whole guild).
+
+        When both names have a value for the same channel/week/metric:
+        ``on_conflict="stop"`` changes nothing and returns the conflicts,
+        ``"keep_target"`` drops ``from_name``'s value, ``"keep_source"`` replaces
+        ``to_name``'s value. Returns {"moved", "replaced", "dropped", "conflicts"}.
+        """
+        if on_conflict not in {"stop", "keep_target", "keep_source"}:
+            raise ValueError(f"Invalid on_conflict: {on_conflict}")
+        from_name, to_name = from_name.strip(), to_name.strip()
+        if not from_name or not to_name:
+            raise ValueError("Player names cannot be empty")
+        if from_name == to_name:
+            raise ValueError("Old and new names are the same")
+
+        async with self._write_lock:
+            conflicts = await self.name_conflicts(
+                guild_id, [from_name, to_name], channel_id=channel_id
+            )
+            result: dict[str, Any] = {
+                "moved": 0,
+                "replaced": 0,
+                "dropped": 0,
+                "conflicts": conflicts,
+            }
+            if conflicts and on_conflict == "stop":
+                return result
+
+            extra_sql, extra_params = self._channel_scope_sql(channel_id=channel_id)
+            # Rows of ``loser`` that share a channel/week/metric with the other name.
+            clash_sql = f"""
+                DELETE FROM WeeklyMetrics
+                WHERE GuildId = ? AND PlayerName = ?{extra_sql}
+                  AND EXISTS (
+                    SELECT 1 FROM WeeklyMetrics o
+                    WHERE o.GuildId = WeeklyMetrics.GuildId
+                      AND o.ChannelId = WeeklyMetrics.ChannelId
+                      AND o.WeekStart = WeeklyMetrics.WeekStart
+                      AND o.MetricType = WeeklyMetrics.MetricType
+                      AND o.PlayerName = ?
+                  )
+            """
+            try:
+                if conflicts:
+                    loser, winner = (
+                        (from_name, to_name)
+                        if on_conflict == "keep_target"
+                        else (to_name, from_name)
+                    )
+                    cur = await self.conn.execute(
+                        clash_sql, (guild_id, loser, *extra_params, winner)
+                    )
+                    key = "dropped" if on_conflict == "keep_target" else "replaced"
+                    result[key] = cur.rowcount
+                cur = await self.conn.execute(
+                    f"""
+                    UPDATE WeeklyMetrics SET PlayerName = ?, UpdatedAt = datetime('now')
+                    WHERE GuildId = ? AND PlayerName = ?{extra_sql}
+                    """,
+                    (to_name, guild_id, from_name, *extra_params),
+                )
+                result["moved"] = cur.rowcount
+                await self.conn.commit()
+            except Exception:
+                await self.conn.rollback()
+                raise
+        log.info(
+            "Renamed player %r -> %r guild=%s channel=%s: %s",
+            from_name,
+            to_name,
+            guild_id,
+            channel_id or "*",
+            {k: v for k, v in result.items() if k != "conflicts"},
         )
-        await self.conn.commit()
-        return len(payload)
+        return result
 
     async def vacuum_into(self, path: Path) -> None:
         """Write a consistent, compacted copy of the database to ``path``."""
@@ -339,26 +487,27 @@ class Database:
         if not guild_id or not channel_id:
             raise ValueError("guild_id and channel_id are required")
         channel_id = str(channel_id)
-        if only_unassigned:
-            cursor = await self.conn.execute(
-                """
-                UPDATE WeeklyMetrics
-                SET ChannelId = ?, UpdatedAt = datetime('now')
-                WHERE GuildId = ? AND ChannelId = ?
-                """,
-                (channel_id, guild_id, UNASSIGNED_CHANNEL_ID),
-            )
-        else:
-            cursor = await self.conn.execute(
-                """
-                UPDATE WeeklyMetrics
-                SET ChannelId = ?, UpdatedAt = datetime('now')
-                WHERE GuildId = ?
-                """,
-                (channel_id, guild_id),
-            )
-        await self.conn.commit()
-        return cursor.rowcount
+        async with self._write_lock:
+            if only_unassigned:
+                cursor = await self.conn.execute(
+                    """
+                    UPDATE WeeklyMetrics
+                    SET ChannelId = ?, UpdatedAt = datetime('now')
+                    WHERE GuildId = ? AND ChannelId = ?
+                    """,
+                    (channel_id, guild_id, UNASSIGNED_CHANNEL_ID),
+                )
+            else:
+                cursor = await self.conn.execute(
+                    """
+                    UPDATE WeeklyMetrics
+                    SET ChannelId = ?, UpdatedAt = datetime('now')
+                    WHERE GuildId = ?
+                    """,
+                    (channel_id, guild_id),
+                )
+            await self.conn.commit()
+            return cursor.rowcount
 
     async def count_unassigned(self, guild_id: str) -> int:
         async with self.conn.execute(

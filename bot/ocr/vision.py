@@ -23,6 +23,9 @@ from bot.utils.parsing import parse_numeric_value
 log = logging.getLogger(__name__)
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+# A backslash JSON doesn't allow (e.g. the model reading "KryOGeN" as
+# "KryOGE\N"). Such backslashes are misread symbols, not escapes.
+_INVALID_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
 
 # A full screenshot's JSON is ~100-350 tokens. The cap stops runaway
 # (repeating) generations in seconds; oMLX's keep-alive chunks mean the HTTP
@@ -119,7 +122,14 @@ def _strip_json_payload(text: str) -> str:
 
 def _parse_json_rows(text: str) -> list[dict[str, Any]]:
     payload = _strip_json_payload(text)
-    data = json.loads(payload)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        repaired = _INVALID_ESCAPE_RE.sub("", payload)
+        if repaired == payload:
+            raise
+        data = json.loads(repaired)
+        log.warning("Dropped stray backslash(es) from vision reply")
     if isinstance(data, dict):
         for key in ("rows", "players", "data", "results", "items"):
             if isinstance(data.get(key), list):
@@ -275,11 +285,15 @@ def extract_metrics_via_vision(
     model: str,
     api_key: str = "",
     timeout: float = 120.0,
+    source_name: str | None = None,
 ) -> OCRResult:
     """
     Call a local OpenAI-compatible vision model and map rows to ExtractedMetric.
+
+    ``source_name`` labels log lines (the image is usually a temp file).
     """
     path = Path(image_path)
+    name = source_name or path.name
     if not path.is_file():
         raise ValueError(f"Could not read image: {path}")
 
@@ -311,7 +325,7 @@ def extract_metrics_via_vision(
                 # Keep the start of the reply so bad output can be diagnosed.
                 log.warning(
                     "Unreadable vision reply for %s (attempt %d/%d): %s | reply: %r",
-                    path.name,
+                    name,
                     attempt,
                     attempts,
                     exc,
@@ -329,7 +343,7 @@ def extract_metrics_via_vision(
                 "Vision OCR attempt %d/%d failed for %s: %s; retrying in %.0fs",
                 attempt,
                 attempts,
-                path.name,
+                name,
                 exc,
                 delay,
             )

@@ -54,6 +54,19 @@ class VisionJsonParseTests(unittest.TestCase):
         self.assertEqual(metrics[0].value, 42.0)
 
 
+    def test_stray_backslash_is_dropped(self) -> None:
+        # Exact reply logged for "KryOGeN": the model invented a backslash.
+        raw = (
+            '```json\n[\n    {"player":"KryOGE\\N","hq":21,"power":"48.8M"},\n'
+            '    {"player":"Schmagalicious","hq":27,"power":"60.1M"}\n]\n```'
+        )
+        rows = _parse_json_rows(raw)
+        self.assertEqual([r["player"] for r in rows], ["KryOGEN", "Schmagalicious"])
+
+    def test_valid_escapes_untouched(self) -> None:
+        rows = _parse_json_rows('[{"player":"A\\"B","value":1},{"player":"C\\u00e9","value":2}]')
+        self.assertEqual([r["player"] for r in rows], ['A"B', "Cé"])
+
     def test_kills_rows(self) -> None:
         rows = [{"player": "EnemyHelicopter", "value": "1,078,263"}]
         metrics, _ = _rows_to_metrics(rows, kind="kills")
@@ -110,6 +123,7 @@ class VisionRoutingTests(unittest.TestCase):
             model="Qwen2.5-VL-7B-Instruct",
             api_key="",
             timeout=30.0,
+            source_name=None,
         )
 
     def test_unknown_kind_rejected(self) -> None:

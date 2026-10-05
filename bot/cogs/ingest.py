@@ -31,6 +31,7 @@ from bot.utils.guild import (
     guild_id_from_context,
     guild_id_from_interaction,
 )
+from bot.utils.names import reconcile_names
 from bot.utils.plausibility import check_batch
 from bot.utils.parsing import (
     format_value,
@@ -883,7 +884,7 @@ class Ingest(commands.Cog):
                         status = "⚠️ no players found"
                     per_file.append(
                         f"• `{image.filename}` — {status}"
-                        + "".join(f"\n  🚩 {a}" for a in alerts)
+                        + "".join(f"\n  {a}" for a in alerts)
                     )
                     sections.append(
                         f"### {index}/{len(images)} — `{image.filename}`\n{detail}"
@@ -976,7 +977,17 @@ class Ingest(commands.Cog):
                 tmp_path,
                 kind=kind,  # type: ignore[arg-type]
                 ocr=self._ocr,
+                source_name=source.filename,
             )
+
+            # Map misread names (case, look-alike characters, stray symbols) to
+            # players already stored in this channel, so history isn't split.
+            known = await self.bot.db.player_name_counts(guild_id, channel_id)
+            renames = reconcile_names((m.player_name for m in result.metrics), known)
+            for m in result.metrics:
+                m.player_name = renames.get(m.player_name, m.player_name)
+            if renames:
+                log.info("Matched OCR names to stored players in %s: %s", source.filename, renames)
 
             payload = [
                 (week_start, m.player_name, m.metric_type, m.value)
@@ -988,7 +999,7 @@ class Ingest(commands.Cog):
             for m in result.metrics:
                 by_metric.setdefault(m.metric_type, {})[m.player_name] = m.value
             alerts = [
-                alert
+                f"🚩 {alert}"
                 for metric_type, values in by_metric.items()
                 if (
                     alert := await check_batch(
@@ -1001,6 +1012,9 @@ class Ingest(commands.Cog):
                     )
                 )
             ]
+            alerts.extend(
+                f"🔤 matched `{read}` → `{stored}`" for read, stored in renames.items()
+            )
             count = await self.bot.db.upsert_metrics(
                 guild_id, payload, channel_id=channel_id
             )
@@ -1009,7 +1023,7 @@ class Ingest(commands.Cog):
             lines = [
                 f"**OCR ingest complete** (`{self._ocr.label}` / `{result.kind}` → week `{week_start}`)",
                 f"Saved **{count}** metric row(s) from **{len(names)}** player(s).",
-                *(f"🚩 {a}" for a in alerts),
+                *alerts,
                 "",
             ]
             for m in result.metrics[:20]:
