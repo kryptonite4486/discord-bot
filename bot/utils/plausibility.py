@@ -15,8 +15,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from bot.db import Database
 
-# Arena Power is roughly 10% of total Power; half or more suggests total Power.
-ARENA_TO_POWER_MAX = 0.5
+# Arena Power is a share of total Power that varies a lot by account (10-80%
+# seen in practice), so share alone can't spot a mix-up. A General/Power
+# screenshot filed as Arena instead gives values equal to total Power.
+ARENA_TO_POWER_MAX = 0.95
+# Mirror check: an Arena screenshot filed as General gives "Power" equal to the
+# stored Arena Power. Real total Power exceeds Arena Power by well over 5%.
+POWER_TO_ARENA_MIN = 1.05
 # Total Power rarely falls by 75%+ week over week; that suggests Arena Power
 # (member cards) or Kills (leaderboard).
 POWER_DROP_MIN = 0.25
@@ -35,53 +40,62 @@ class _Rule:
     message: str
 
 
-RULES: dict[str, _Rule] = {
-    "ArenaPower": _Rule(
-        reference_metric="Power",
-        include_week=True,
-        flagged=lambda value, ref: ref > 0 and value >= ref * ARENA_TO_POWER_MAX,
-        message=(
-            "{n} of {total} Arena Power value(s) are at least half the player's "
-            "total Power — is this a **Power** screenshot? (`dataset:power`)"
-        ),
+_ARENA_MATCHES_POWER = _Rule(
+    reference_metric="Power",
+    include_week=True,
+    flagged=lambda value, ref: ref > 0 and value >= ref * ARENA_TO_POWER_MAX,
+    message=(
+        "{n} of {total} Arena Power value(s) match the player's total Power "
+        "(95%+) — is this a **General** or **Power** screenshot? "
+        "(`dataset:general` / `dataset:power`)"
     ),
-    "Power": _Rule(
-        reference_metric="Power",
-        include_week=False,
-        flagged=lambda value, ref: ref > 0 and value <= ref * POWER_DROP_MIN,
-        message=(
-            "{n} of {total} Power value(s) dropped 75%+ from the previous week — "
-            "is this an **Arena Power** (`dataset:arena`) or **Kills** "
-            "(`dataset:kills`) screenshot?"
-        ),
+)
+_POWER_DROPPED = _Rule(
+    reference_metric="Power",
+    include_week=False,
+    flagged=lambda value, ref: ref > 0 and value <= ref * POWER_DROP_MIN,
+    message=(
+        "{n} of {total} Power value(s) dropped 75%+ from the previous week — "
+        "is this an **Arena Power** (`dataset:arena`) or **Kills** "
+        "(`dataset:kills`) screenshot?"
     ),
-    "Kills": _Rule(
-        reference_metric="Kills",
-        include_week=False,
-        flagged=lambda value, ref: value < ref or (
-            ref > 0 and value >= ref * KILLS_JUMP_MAX
-        ),
-        message=(
-            "{n} of {total} Kills total(s) went down or jumped 5x+ from before — "
-            "is this a **Power** screenshot? (`dataset:power`) Otherwise check "
-            "player names."
-        ),
+)
+_POWER_MATCHES_ARENA = _Rule(
+    reference_metric="ArenaPower",
+    include_week=True,
+    flagged=lambda value, ref: ref > 0 and value <= ref * POWER_TO_ARENA_MIN,
+    message=(
+        "{n} of {total} Power value(s) match the player's Arena Power (within "
+        "5%) — is this an **Arena** screenshot? (`dataset:arena`)"
     ),
+)
+_KILLS_WRONG = _Rule(
+    reference_metric="Kills",
+    include_week=False,
+    flagged=lambda value, ref: value < ref or (ref > 0 and value >= ref * KILLS_JUMP_MAX),
+    message=(
+        "{n} of {total} Kills total(s) went down or jumped 5x+ from before — "
+        "is this a **Power** screenshot? (`dataset:power`) Otherwise check "
+        "player names."
+    ),
+)
+
+RULES: dict[str, tuple[_Rule, ...]] = {
+    "ArenaPower": (_ARENA_MATCHES_POWER,),
+    "Power": (_POWER_DROPPED, _POWER_MATCHES_ARENA),
+    "Kills": (_KILLS_WRONG,),
 }
 
 
 def evaluate(
-    metric_type: str,
+    rule: _Rule,
     values: Mapping[str, float],
     references: Mapping[str, float],
 ) -> str | None:
     """
-    Return a warning when enough of ``values`` (player -> new value) look wrong
-    against ``references`` (lowercased player -> stored value).
+    Return ``rule``'s warning when enough of ``values`` (player -> new value)
+    look wrong against ``references`` (lowercased player -> stored value).
     """
-    rule = RULES.get(metric_type)
-    if rule is None:
-        return None
     compared = 0
     flagged = 0
     for player, value in values.items():
@@ -105,17 +119,20 @@ async def check_batch(
     week_start: str,
     metric_type: str,
     values: Mapping[str, float],
-) -> str | None:
-    """Look up stored reference values and run the rule for ``metric_type``."""
-    rule = RULES.get(metric_type)
-    if rule is None or not values:
-        return None
-    references = await db.get_latest_values(
-        guild_id,
-        rule.reference_metric,
-        values.keys(),
-        channel_id=channel_id,
-        week_start=week_start,
-        include_week=rule.include_week,
-    )
-    return evaluate(metric_type, values, references)
+) -> list[str]:
+    """Look up stored reference values and run every rule for ``metric_type``."""
+    if not values:
+        return []
+    warnings: list[str] = []
+    for rule in RULES.get(metric_type, ()):
+        references = await db.get_latest_values(
+            guild_id,
+            rule.reference_metric,
+            values.keys(),
+            channel_id=channel_id,
+            week_start=week_start,
+            include_week=rule.include_week,
+        )
+        if warning := evaluate(rule, values, references):
+            warnings.append(warning)
+    return warnings

@@ -1001,15 +1001,13 @@ class Ingest(commands.Cog):
             alerts = [
                 f"🚩 {alert}"
                 for metric_type, values in by_metric.items()
-                if (
-                    alert := await check_batch(
-                        self.bot.db,
-                        guild_id,
-                        channel_id,
-                        week_start,
-                        metric_type,
-                        values,
-                    )
+                for alert in await check_batch(
+                    self.bot.db,
+                    guild_id,
+                    channel_id,
+                    week_start,
+                    metric_type,
+                    values,
                 )
             ]
             alerts.extend(

@@ -65,8 +65,9 @@ the message with the dataset (e.g. `kills current`).
 
 Every image import needs a **dataset**: versus, tech, general, power, arena or kills.
 Lookalike screens: General vs Arena (member cards) and Power vs Kills (leaderboards).
-The bot flags (🚩) uploads that look like the wrong one, e.g. Arena Power near total
-Power, Power collapsing week over week, or Kills going down or jumping 5x+.
+The bot flags (🚩) uploads that look like the wrong one, e.g. Arena Power equal to
+total Power (or the reverse), Power collapsing week over week, or Kills going down
+or jumping 5x+.
 """
 
 

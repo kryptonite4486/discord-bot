@@ -22,7 +22,7 @@ from bot.config import (  # noqa: E402
 from bot.ocr.pipeline import ExtractedMetric, relabel_member_cards  # noqa: E402
 from bot.db import Database  # noqa: E402
 from bot.utils.parsing import format_value  # noqa: E402
-from bot.utils.plausibility import check_batch, evaluate  # noqa: E402
+from bot.utils.plausibility import RULES, check_batch, evaluate  # noqa: E402
 
 
 class MetricConfigTests(unittest.TestCase):
@@ -60,62 +60,91 @@ class MetricConfigTests(unittest.TestCase):
         self.assertEqual(format_value("ArenaPower", 11_200_000), "11.2M")
 
 
+def _evaluate(metric: str, reference_metric: str, values, references):
+    (rule,) = [r for r in RULES[metric] if r.reference_metric == reference_metric]
+    return evaluate(rule, values, references)
+
+
+# Real values from the SWag arena upload on 2026-10-04: legitimate Arena Power
+# was 50-80% of total Power for these strong accounts (median 30% overall).
+SWAG_ARENA = {"MohameD": 119_400_000, "Haydar": 105_600_000, "Pharaoh M": 124_300_000}
+SWAG_POWER = {"mohamed": 148_900_000, "haydar": 145_100_000, "pharaoh m": 184_500_000}
+
+
 class EvaluateTests(unittest.TestCase):
-    def test_arena_near_total_power_flagged(self) -> None:
-        values = {"A": 60_000_000, "B": 55_000_000, "C": 9_000_000}
+    def test_general_screenshot_filed_as_arena_flagged(self) -> None:
+        # Values equal (or close) to total Power; C is a genuine arena value.
+        values = {"A": 65_000_000, "B": 59_000_000, "C": 9_000_000}
         power = {"a": 65_000_000, "b": 60_000_000, "c": 90_000_000}
-        alert = evaluate("ArenaPower", values, power)
+        alert = _evaluate("ArenaPower", "Power", values, power)
         self.assertIsNotNone(alert)
         self.assertIn("2 of 3", alert)
-        self.assertIn("dataset:power", alert)
+        self.assertIn("dataset:general", alert)
 
-    def test_realistic_arena_quiet(self) -> None:
-        values = {"A": 6_500_000, "B": 6_000_000}
-        power = {"a": 65_000_000, "b": 60_000_000}
-        self.assertIsNone(evaluate("ArenaPower", values, power))
+    def test_high_but_real_arena_share_quiet(self) -> None:
+        self.assertIsNone(_evaluate("ArenaPower", "Power", SWAG_ARENA, SWAG_POWER))
+
+    def test_arena_filed_as_general_compared_to_last_week_still_flagged(self) -> None:
+        # Arena uploaded before this week's General: a mis-filed General's
+        # values exceed last week's (lower) Power, so they still match.
+        values = {"A": 66_000_000, "B": 61_000_000, "C": 91_000_000}
+        last_week = {"a": 65_000_000, "b": 60_000_000, "c": 90_000_000}
+        self.assertIsNotNone(_evaluate("ArenaPower", "Power", values, last_week))
+
+    def test_arena_screenshot_filed_as_general_flagged(self) -> None:
+        # "Power" values equal to the stored Arena Power.
+        arena = {k.lower(): v for k, v in SWAG_ARENA.items()}
+        alert = _evaluate("Power", "ArenaPower", SWAG_ARENA, arena)
+        self.assertIsNotNone(alert)
+        self.assertIn("dataset:arena", alert)
+
+    def test_real_power_vs_arena_quiet(self) -> None:
+        arena = {k.lower(): v for k, v in SWAG_ARENA.items()}
+        real_power = {"MohameD": 148_900_000, "Haydar": 145_100_000, "Pharaoh M": 184_500_000}
+        self.assertIsNone(_evaluate("Power", "ArenaPower", real_power, arena))
 
     def test_power_collapse_flagged(self) -> None:
         values = {"A": 6_500_000, "B": 6_000_000, "C": 5_000_000}
         previous = {"a": 65_000_000, "b": 60_000_000, "c": 50_000_000}
-        alert = evaluate("Power", values, previous)
+        alert = _evaluate("Power", "Power", values, previous)
         self.assertIsNotNone(alert)
         self.assertIn("dataset:arena", alert)
 
     def test_kills_going_down_flagged(self) -> None:
         values = {"A": 900_000, "B": 1_000_000}
         previous = {"a": 1_078_263, "b": 1_005_842}
-        self.assertIsNotNone(evaluate("Kills", values, previous))
+        self.assertIsNotNone(_evaluate("Kills", "Kills", values, previous))
 
     def test_kills_jump_flagged_as_power(self) -> None:
         # A Power leaderboard filed as Kills: ~100x the previous kill totals.
         values = {"A": 112_257_938, "B": 65_521_967}
         previous = {"a": 1_078_263, "b": 1_005_842}
-        alert = evaluate("Kills", values, previous)
+        alert = _evaluate("Kills", "Kills", values, previous)
         self.assertIsNotNone(alert)
         self.assertIn("dataset:power", alert)
 
     def test_kills_going_up_quiet(self) -> None:
         values = {"A": 1_100_000}
         previous = {"a": 1_078_263}
-        self.assertIsNone(evaluate("Kills", values, previous))
+        self.assertIsNone(_evaluate("Kills", "Kills", values, previous))
 
     def test_single_outlier_in_large_upload_quiet(self) -> None:
         # One misread out of ten is below both the 3-row and 30% thresholds.
         values = {f"P{n}": 1_000_000 + n for n in range(10)}
         previous = {f"p{n}": 900_000 for n in range(10)}
         previous["p0"] = 2_000_000
-        self.assertIsNone(evaluate("Kills", values, previous))
+        self.assertIsNone(_evaluate("Kills", "Kills", values, previous))
 
     def test_three_rows_flag_even_when_under_share(self) -> None:
         values = {f"P{n}": 1_000_000 for n in range(20)}
         previous = {f"p{n}": 900_000 for n in range(20)}
         for n in range(3):
             previous[f"p{n}"] = 2_000_000
-        self.assertIsNotNone(evaluate("Kills", values, previous))
+        self.assertIsNotNone(_evaluate("Kills", "Kills", values, previous))
 
     def test_no_history_or_unchecked_metric(self) -> None:
-        self.assertIsNone(evaluate("Kills", {"A": 1}, {}))
-        self.assertIsNone(evaluate("VersusPoints", {"A": 1}, {"a": 10}))
+        self.assertIsNone(_evaluate("Kills", "Kills", {"A": 1}, {}))
+        self.assertNotIn("VersusPoints", RULES)
 
 
 class CheckBatchTests(unittest.IsolatedAsyncioTestCase):
@@ -141,26 +170,46 @@ class CheckBatchTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 lower = {"enemyhelicopter": 900_000, "kbeezconc": 1_000_000}
-                alert = await check_batch(
+                alerts = await check_batch(
                     db, "g1", "c1", "2026-09-27", "Kills", lower
                 )
-                self.assertIsNotNone(alert)
+                self.assertEqual(len(alerts), 1)
 
                 higher = {"EnemyHelicopter": 1_100_000}
-                self.assertIsNone(
-                    await check_batch(db, "g1", "c1", "2026-09-27", "Kills", higher)
+                self.assertEqual(
+                    await check_batch(db, "g1", "c1", "2026-09-27", "Kills", higher), []
                 )
 
                 # Arena compares with Power from the same week.
-                alert = await check_batch(
+                alerts = await check_batch(
                     db,
                     "g1",
                     "c1",
                     "2026-09-27",
                     "ArenaPower",
-                    {"EnemyHelicopter": 100_000_000},
+                    {"EnemyHelicopter": 110_000_000},
                 )
-                self.assertIsNotNone(alert)
+                self.assertEqual(len(alerts), 1)
+                # A real arena share, however high, passes.
+                self.assertEqual(
+                    await check_batch(
+                        db, "g1", "c1", "2026-09-27", "ArenaPower",
+                        {"EnemyHelicopter": 80_000_000},
+                    ),
+                    [],
+                )
+
+                # Power runs both of its checks: equal to stored Arena Power.
+                await db.upsert_metrics(
+                    "g1",
+                    [("2026-09-27", "KBeezCONC", "ArenaPower", 30_000_000)],
+                    channel_id="c1",
+                )
+                alerts = await check_batch(
+                    db, "g1", "c1", "2026-09-27", "Power", {"KBeezCONC": 30_500_000}
+                )
+                self.assertEqual(len(alerts), 1)
+                self.assertIn("dataset:arena", alerts[0])
             finally:
                 await db.close()
 
