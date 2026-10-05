@@ -66,8 +66,15 @@ class MetricConfigTests(unittest.TestCase):
 
 
 def _evaluate(metric: str, reference_metric: str, values, references):
-    (rule,) = [r for r in RULES[metric] if r.reference_metric == reference_metric]
-    return evaluate(rule, values, references)
+    """The warning from whichever of ``metric``'s rules fires, if any."""
+    warnings = [
+        w
+        for r in RULES[metric]
+        if r.reference_metric == reference_metric
+        and (w := evaluate(r, values, references))
+    ]
+    assert len(warnings) <= 1, warnings
+    return warnings[0] if warnings else None
 
 
 # Real values from the SWag arena upload on 2026-10-04: legitimate Arena Power
@@ -123,6 +130,22 @@ class EvaluateTests(unittest.TestCase):
         alert = _evaluate("Power", "Power", values, previous)
         self.assertIsNotNone(alert)
         self.assertIn("dataset:arena", alert)
+
+    def test_power_tenfold_jump_flagged(self) -> None:
+        # Real case: week 2026-09-13 stored 38.5M as 385M; seen from the
+        # following week in reverse, and here as an inflated new upload.
+        values = {"TommyR93": 385_000_000, "Mbjack": 473_000_000, "Umzee": 353_000_000}
+        previous = {"tommyr93": 48_000_000, "mbjack": 51_200_000, "umzee": 36_700_000}
+        alert = _evaluate("Power", "Power", values, previous)
+        self.assertIsNotNone(alert)
+        self.assertIn("dropped decimal", alert)
+
+    def test_strong_real_power_growth_quiet(self) -> None:
+        # The largest real weekly growth seen was about +75%.
+        values = {"A": 175_000_000, "B": 143_000_000, "C": 60_000_000}
+        previous = {"a": 100_000_000, "b": 100_000_000, "c": 50_000_000}
+        rules = [r for r in RULES["Power"]]
+        self.assertEqual([evaluate(r, values, previous) for r in rules], [None, None])
 
     def test_kills_going_down_flagged(self) -> None:
         values = {"A": 900_000, "B": 1_000_000}

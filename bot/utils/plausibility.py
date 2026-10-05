@@ -7,8 +7,8 @@ warn; the caller still saves the data.
 
 Two kinds of check:
 
-* Over time (previous weeks): total Power rarely collapses, and Kills totals
-  never fall.
+* Over time (previous weeks): total Power rarely collapses or multiplies
+  (a 5x+ jump is a dropped decimal), and Kills totals never fall.
 * Within the same week: Arena Power is part of total Power, so it can never
   exceed it. A player breaking that is a misread value or name; many players
   at (or above) their total Power means a General/Arena mix-up. Comparing only
@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 # Total Power rarely falls by 75%+ week over week; that suggests Arena Power
 # (member cards) or Kills (leaderboard).
 POWER_DROP_MIN = 0.25
+# Weekly Power growth has peaked around +75%; 5x+ is a misread, typically a
+# dropped decimal ("38.5M" read as 385M).
+POWER_JUMP_MAX = 5.0
 # Kills totals never fall, and a 5x jump suggests a Power leaderboard.
 KILLS_JUMP_MAX = 5.0
 # Same week: real Arena Power has been 1-80% of total Power. Arena within 5%
@@ -62,6 +65,15 @@ _POWER_DROPPED = _Rule(
         "(`dataset:kills`) screenshot?"
     ),
 )
+_POWER_JUMPED = _Rule(
+    reference_metric="Power",
+    flagged=lambda value, ref: ref > 0 and value >= ref * POWER_JUMP_MAX,
+    message=(
+        "{n} of {total} Power value(s) jumped 5x+ over the previous week — "
+        "likely misread (e.g. a dropped decimal: 38.5M read as 385M). Check "
+        "these values against the screenshot."
+    ),
+)
 _KILLS_WRONG = _Rule(
     reference_metric="Kills",
     flagged=lambda value, ref: value < ref or (ref > 0 and value >= ref * KILLS_JUMP_MAX),
@@ -73,7 +85,7 @@ _KILLS_WRONG = _Rule(
 )
 
 RULES: dict[str, tuple[_Rule, ...]] = {
-    "Power": (_POWER_DROPPED,),
+    "Power": (_POWER_DROPPED, _POWER_JUMPED),
     "Kills": (_KILLS_WRONG,),
 }
 
