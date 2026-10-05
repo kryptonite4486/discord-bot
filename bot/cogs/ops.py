@@ -1,4 +1,4 @@
-"""Operator-only commands: reload, sync, backup, usage.
+"""Operator-only commands: reload, sync, backup, queue, usage.
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -19,11 +19,12 @@ from discord.ext import commands
 
 from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
+from bot.utils.fair_queue import GuildQueueState
 
 log = logging.getLogger(__name__)
 
 NOT_OPERATOR_MESSAGE = "Only the bot operator can use this command."
-# Keeps /ops usage under Discord's 2,000-character message limit.
+# Keeps /ops usage and /ops queue under Discord's 2,000-character limit.
 MAX_USAGE_ROWS = 20
 
 # Cog reload alone does not refresh already-imported helpers. Reload deps in
@@ -168,6 +169,44 @@ def format_usage_report(
     return "\n".join(lines)
 
 
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60:02d}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
+
+
+def format_queue_report(
+    states: list[GuildQueueState], slots: int, names: dict[str, str]
+) -> str:
+    """Markdown view of the live OCR queue, per server."""
+    running = sum(s.running for s in states)
+    waiting = sum(s.waiting for s in states)
+    head = (
+        f"**OCR queue:** {running}/{slots} slot(s) busy, "
+        f"{waiting} request(s) waiting across {len(states)} server(s)."
+    )
+    if not states:
+        return head
+    lines = [
+        head,
+        "```",
+        f"{'Server':<22} {'Run':>3} {'Wait':>4} {'Running for':>11} {'Oldest wait':>11}",
+    ]
+    for s in states[:MAX_USAGE_ROWS]:
+        lines.append(
+            f"{names.get(s.guild_id, s.guild_id)[:22]:<22} {s.running:>3} {s.waiting:>4} "
+            f"{_duration(s.longest_run_seconds) if s.running else '-':>11} "
+            f"{_duration(s.longest_wait_seconds) if s.waiting else '-':>11}"
+        )
+    if len(states) > MAX_USAGE_ROWS:
+        lines.append(f"…and {len(states) - MAX_USAGE_ROWS} more server(s)")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def is_operator(bot: commands.Bot, user_id: int) -> bool:
     return user_id in bot.settings.bot_owner_ids
 
@@ -279,6 +318,21 @@ class Ops(commands.Cog):
             ephemeral=True,
         )
 
+    @ops.command(name="queue", description="Live OCR queue: running and waiting requests per server")
+    async def queue(self, interaction: discord.Interaction) -> None:
+        ingest = self.bot.get_cog("Ingest")
+        ocr_queue = getattr(ingest, "ocr_queue", None)
+        if ocr_queue is None:
+            await interaction.response.send_message(
+                "The ingest cog isn't loaded, so there is no OCR queue.", ephemeral=True
+            )
+            return
+        names = {str(g.id): g.name for g in self.bot.guilds}
+        await interaction.response.send_message(
+            format_queue_report(ocr_queue.snapshot(), ocr_queue.slots, names),
+            ephemeral=True,
+        )
+
     @ops.command(name="usage", description="OCR usage per server (images, OCR time, queue wait)")
     @app_commands.describe(days="How many days back, including today (default 7)")
     async def usage(
@@ -312,7 +366,7 @@ async def setup(bot: commands.Bot) -> None:
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup, usage) are disabled"
+            "(/ops reload, sync, backup, queue, usage) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

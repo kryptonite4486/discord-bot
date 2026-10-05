@@ -31,6 +31,7 @@ from bot.utils.guild import (
     guild_id_from_context,
     guild_id_from_interaction,
 )
+from bot.utils.fair_queue import FairQueue
 from bot.utils.names import reconcile_names
 from bot.utils.plausibility import check_batch
 from bot.utils.parsing import (
@@ -92,11 +93,10 @@ class Ingest(commands.Cog):
             api_key=s.ocr_vision_api_key,
             timeout=s.ocr_vision_timeout,
         )
-        # Bot-wide OCR queue: every batch (slash, zip, batch, prefix)
-        # waits here, so the vision server only sees OCR_MAX_CONCURRENCY
-        # batches at a time no matter how many uploads arrive together.
-        self._ocr_gate = asyncio.Semaphore(s.ocr_max_concurrency)
-        self._ocr_pending = 0  # batches running or waiting for the gate
+        # Bot-wide OCR queue: every request (slash, zip, batch, prefix) waits
+        # here, so the vision server only sees OCR_MAX_CONCURRENCY requests at
+        # a time. Servers take turns, one whole request each.
+        self.ocr_queue = FairQueue(s.ocr_max_concurrency)
 
     def _default_week(self, week: str | None, *, context: str = "ingest") -> str:
         if week:
@@ -845,16 +845,16 @@ class Ingest(commands.Cog):
         empty = 0
         failed: list[str] = []
 
-        ahead = self._ocr_pending
-        self._ocr_pending += 1
+        # Users only hear about their own server's requests, never others':
+        # waiting behind another server says nothing at all.
+        async def on_queued(own_ahead: int) -> None:
+            if progress is not None and own_ahead:
+                await progress(0, len(images), f"{own_ahead} queued ahead")
+
         queued_at = time.monotonic()
         started_at: float | None = None
         try:
-            if ahead and progress is not None:
-                await progress(
-                    0, len(images), f"Queued behind {ahead} other OCR batch(es)…"
-                )
-            async with self._ocr_gate:
+            async with self.ocr_queue.slot(guild_id, on_queued=on_queued):
                 started_at = time.monotonic()
                 for index, image in enumerate(images, start=1):
                     if progress is not None:
@@ -900,7 +900,6 @@ class Ingest(commands.Cog):
                         count,
                     )
         finally:
-            self._ocr_pending -= 1
             await self._record_usage(
                 guild_id,
                 queued_at=queued_at,

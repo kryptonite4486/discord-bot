@@ -13,7 +13,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.cogs.ingest import Ingest  # noqa: E402
-from bot.cogs.ops import MAX_USAGE_ROWS, format_usage_report  # noqa: E402
+from bot.cogs.ops import MAX_USAGE_ROWS, format_queue_report, format_usage_report  # noqa: E402
+from bot.utils.fair_queue import GuildQueueState  # noqa: E402
 from bot.db import Database  # noqa: E402
 
 
@@ -120,6 +121,26 @@ class UsageReportTests(unittest.TestCase):
         text = format_usage_report(14, by_guild, days, {})
         self.assertLess(len(text), 2000)
         self.assertIn(f"…and {59 - MAX_USAGE_ROWS} more server(s)", text)
+
+
+class QueueReportTests(unittest.TestCase):
+    def test_idle(self) -> None:
+        text = format_queue_report([], 1, {})
+        self.assertIn("0/1 slot(s) busy, 0 request(s) waiting across 0 server(s)", text)
+        self.assertNotIn("```", text)
+
+    def test_per_server_rows(self) -> None:
+        states = [
+            GuildQueueState("1", running=1, waiting=2, longest_run_seconds=75, longest_wait_seconds=30),
+            GuildQueueState("2", running=0, waiting=1, longest_run_seconds=0, longest_wait_seconds=3700),
+        ]
+        text = format_queue_report(states, 1, {"1": "SWag"})
+        self.assertIn("1/1 slot(s) busy, 3 request(s) waiting across 2 server(s)", text)
+        swag = next(line for line in text.splitlines() if line.startswith("SWag"))
+        self.assertIn("1m 15s", swag)
+        self.assertIn("30s", swag)
+        other = next(line for line in text.splitlines() if line.startswith("2 "))
+        self.assertIn("1h 01m", other)
 
 
 if __name__ == "__main__":

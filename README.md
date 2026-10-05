@@ -79,7 +79,7 @@ Screenshots are read by a local OpenAI-compatible vision server (e.g. oMLX). Thi
 | `OCR_VISION_TIMEOUT` | `120` | Seconds |
 | `OCR_MAX_CONCURRENCY` | `1` | Images sent to the vision server at once, across all uploads |
 
-**Reliability.** oMLX batches concurrent requests, and with Qwen2.5-VL that garbles replies (broken JSON, runaway generations) and can exhaust GPU memory (`metal::malloc` errors), failing every in-flight request at once. So the bot keeps one bot-wide OCR queue: uploads that arrive together wait their turn ("Queued behind N other OCR batch(es)") and images go to the model one at a time. Each request is capped at 1024 output tokens, and dropped connections, server errors and unreadable replies are retried twice. Batch summaries count images as saved, no players found, or failed, and list failed files to re-upload. Unreadable replies are logged (first 500 characters) for diagnosis.
+**Reliability.** oMLX batches concurrent requests, and with Qwen2.5-VL that garbles replies (broken JSON, runaway generations) and can exhaust GPU memory (`metal::malloc` errors), failing every in-flight request at once. So the bot keeps one bot-wide OCR queue and images go to the model one at a time. Each upload command is one request (a single image, an `/ingest image` set, a zip, or an `/ingest batch`), and a request runs to the end before the next one starts. Servers take turns: when a request finishes, the next one comes from the next server with something waiting, so one server's backlog can't hold up another's. Within a server, requests run in the order they were sent. Users only see their own server's backlog: an upload waiting behind earlier uploads from the same server shows "N queued ahead", and one waiting only on other servers shows nothing extra. Other servers' requests are never mentioned. `/ops queue` shows the whole queue. Each request is capped at 1024 output tokens, and dropped connections, server errors and unreadable replies are retried twice. Batch summaries count images as saved, no players found, or failed, and list failed files to re-upload. Unreadable replies are logged (first 500 characters) for diagnosis.
 
 `docker-compose.yml` maps `host.docker.internal` to the host gateway so the container can reach oMLX on the Mac. After setting the key, rebuild/restart:
 
@@ -104,6 +104,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops reload <cog>` | Reload a cog |
 | `/ops sync` | Register commands globally, `/ops` in the control server, and remove duplicate per-server copies everywhere |
 | `/ops backup` | Write a database backup now |
+| `/ops queue` | Live OCR queue: requests running and waiting per server, and how long the oldest has waited |
 | `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
 
 `!reload <cog>` and `!sync` do the same from any server, for operators only.

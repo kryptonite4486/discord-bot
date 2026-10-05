@@ -174,7 +174,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peak, 1)
         # The two later batches were told they were queued.
         self.assertEqual(len(queued), 2)
-        self.assertEqual(cog._ocr_pending, 0)
+        self.assertEqual((cog.ocr_queue.running, cog.ocr_queue.waiting), (0, 0))
         # One usage record per batch; batches that queued record the wait.
         usage = cog.bot.db.usage
         self.assertEqual(len(usage), 3)
@@ -182,6 +182,66 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         waits = sorted(a["ocr_wait_seconds"] for _, _, a in usage)
         self.assertLess(waits[0], 0.01)
         self.assertGreater(waits[-1], 0.03)  # waited behind two 3-image batches
+
+    async def test_servers_take_turns_and_requests_stay_whole(self) -> None:
+        cog = _cog()
+        started: list[str] = []
+        release = asyncio.Event()
+
+        async def fake_process(image, kind, week, guild_id, *args):
+            await release.wait()
+            started.append(image.filename)
+            await asyncio.sleep(0)
+            return "detail", 1, {"P"}, []
+
+        with patch.object(cog, "_process_attachment", side_effect=fake_process):
+            tasks = []
+            for guild, prefix in (("A", "a"), ("A", "x"), ("A", "y"), ("B", "b")):
+                tasks.append(
+                    asyncio.create_task(
+                        cog._process_attachments(_images(prefix, 3), "kills", "w", guild, "c")
+                    )
+                )
+                await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(*tasks)
+        # A's first request runs whole, then B's, then A's backlog.
+        self.assertEqual(
+            started,
+            [f"{p}{i}.png" for p in ("a", "b", "x", "y") for i in range(3)],
+        )
+
+    async def test_queued_message_never_mentions_other_servers(self) -> None:
+        cog = _cog()
+        release = asyncio.Event()
+        notices: dict[str, list[str]] = {"A": [], "B": []}
+
+        async def fake_process(*args):
+            await release.wait()
+            return "detail", 1, {"P"}, []
+
+        def progress_for(guild):
+            async def progress(index, total, text):
+                if index == 0:
+                    notices[guild].append(text)
+            return progress
+
+        with patch.object(cog, "_process_attachment", side_effect=fake_process):
+            tasks = []
+            for guild in ("A", "A", "B"):
+                tasks.append(
+                    asyncio.create_task(
+                        cog._process_attachments(
+                            _images(guild, 1), "kills", "w", guild, "c",
+                            progress=progress_for(guild),
+                        )
+                    )
+                )
+                await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(*tasks)
+        self.assertEqual(notices["A"], ["1 queued ahead"])
+        self.assertEqual(notices["B"], [])  # waiting only on another server
 
     async def test_concurrency_setting_is_respected(self) -> None:
         cog = _cog(max_concurrency=2)
