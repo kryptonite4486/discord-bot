@@ -16,6 +16,16 @@ log = logging.getLogger(__name__)
 # Empty string = unassigned channel (Phase 1 pre-migration).
 UNASSIGNED_CHANNEL_ID = ""
 
+# UsageLedger measures. ocr_images counts every image sent to the vision
+# model (failed ones too: they still cost GPU time).
+USAGE_KINDS = (
+    "ocr_batches",
+    "ocr_images",
+    "ocr_failed",
+    "ocr_seconds",
+    "ocr_wait_seconds",
+)
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS WeeklyMetrics (
     GuildId     TEXT    NOT NULL,
@@ -36,6 +46,15 @@ CREATE INDEX IF NOT EXISTS idx_weekly_week
 
 CREATE INDEX IF NOT EXISTS idx_weekly_unassigned
     ON WeeklyMetrics (GuildId, ChannelId);
+
+-- Per-server usage, one row per UTC day and measure (see USAGE_KINDS).
+CREATE TABLE IF NOT EXISTS UsageLedger (
+    GuildId TEXT NOT NULL,
+    Day     TEXT NOT NULL,  -- UTC YYYY-MM-DD
+    Kind    TEXT NOT NULL,
+    Amount  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (GuildId, Day, Kind)
+);
 """
 
 LEGACY_GUILD_FALLBACK = "legacy"
@@ -899,3 +918,57 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [(str(r["ChannelId"]), int(r["c"])) for r in rows]
+
+    async def add_usage(
+        self, guild_id: str, day: str, amounts: dict[str, float]
+    ) -> None:
+        """Add to a server's usage counters for one UTC day."""
+        unknown = set(amounts) - set(USAGE_KINDS)
+        if unknown:
+            raise ValueError(f"Invalid usage kind(s): {sorted(unknown)}")
+        rows = [(guild_id, day, k, float(v)) for k, v in amounts.items() if v]
+        if not rows:
+            return
+        async with self._write_lock:
+            await self.conn.executemany(
+                """
+                INSERT INTO UsageLedger (GuildId, Day, Kind, Amount)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(GuildId, Day, Kind)
+                DO UPDATE SET Amount = Amount + excluded.Amount
+                """,
+                rows,
+            )
+            await self.conn.commit()
+
+    async def usage_by_guild(self, since_day: str) -> dict[str, dict[str, float]]:
+        """Totals per server and measure from ``since_day`` (inclusive)."""
+        async with self.conn.execute(
+            """
+            SELECT GuildId, Kind, SUM(Amount) AS total
+            FROM UsageLedger
+            WHERE Day >= ?
+            GROUP BY GuildId, Kind
+            """,
+            (since_day,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out: dict[str, dict[str, float]] = {}
+        for r in rows:
+            out.setdefault(str(r["GuildId"]), {})[str(r["Kind"])] = float(r["total"])
+        return out
+
+    async def usage_by_day(self, since_day: str, kind: str) -> list[tuple[str, float]]:
+        """One measure summed across servers per day, oldest first."""
+        async with self.conn.execute(
+            """
+            SELECT Day, SUM(Amount) AS total
+            FROM UsageLedger
+            WHERE Day >= ? AND Kind = ?
+            GROUP BY Day
+            ORDER BY Day
+            """,
+            (since_day, kind),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(str(r["Day"]), float(r["total"])) for r in rows]

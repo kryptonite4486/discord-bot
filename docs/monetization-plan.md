@@ -23,7 +23,7 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 ### P0: safety and multi-tenancy
 1. ✅ *Done 2026-10-05.* **Split operator and server-admin permissions.** Add `BOT_OWNER_IDS` (or use the application owner/team). Move `reload`, `sync all/global`, `backup` and all entitlement commands into an owner-only `/ops` group. Sync that group **only** to a private control server (`CONTROL_GUILD_ID`) so it never shows up in customer servers, and check owner identity again inside every handler.
 2. **Per-server settings table** (`GuildSettings`): default week, locale, and a "report channel" for scheduled posts and gift notices. Add a `/setup` command for server admins.
-3. **Usage metering** (`UsageLedger`): one row per OCR image per guild per week, recorded when the job is queued and adjusted if it fails. This drives quotas and tells you your real costs.
+3. ✅ *Counting done 2026-10-05 (`UsageLedger`, `/ops usage`); enforcement comes with tiers.* **Usage metering** (`UsageLedger`): per-server counters per UTC day for OCR batches, images sent to the model, failures, OCR seconds and queue-wait seconds, written once each batch finishes. Daily rows add up to weekly quotas and also show peak days. This drives quotas and tells you your real costs.
 4. **Fair OCR queue.** Replace the single FIFO semaphore with per-guild queues and a scheduler that serves guilds round-robin, with a priority lane for paid tiers. Otherwise one free server's 50-image zip blocks a paying customer.
 5. **Privacy Policy and Terms of Service**, published at stable URLs. They need to cover what is stored (player names and game stats, *not* Discord user data), how long it's kept, and how to request deletion.
 6. **Data deletion:** `/data delete` (server admin, with confirmation) and a removal job. When the bot leaves a guild (`on_guild_remove`), mark the guild and purge its data after a grace period (e.g. 30 days).
@@ -113,10 +113,12 @@ CREATE TABLE GuildEntitlement (
 );
 CREATE INDEX idx_ent_guild ON GuildEntitlement (GuildId, RevokedAt, EndsAt);
 
+-- Built 2026-10-05; see bot/db/database.py.
 CREATE TABLE UsageLedger (
-  GuildId TEXT, WeekStart TEXT, Kind TEXT,  -- 'ocr_image'
-  Count INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (GuildId, WeekStart, Kind)
+  GuildId TEXT, Day TEXT,  -- UTC YYYY-MM-DD
+  Kind TEXT,               -- ocr_batches | ocr_images | ocr_failed | ocr_seconds | ocr_wait_seconds
+  Amount REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (GuildId, Day, Kind)
 );
 
 CREATE TABLE EntitlementAudit (
@@ -130,7 +132,7 @@ The **effective tier** is the highest tier among a guild's active entitlements (
 ### Code layout
 - `bot/utils/tiers.py`: a `TierPolicy` dataclass per tier (quotas, retention weeks, feature flags) and `async effective_tier(guild_id)` with a cache of about 60 seconds, cleared when an entitlement event arrives.
 - Decorator `@requires_feature("trend")` for slash commands. It replies with an ephemeral upgrade message and does not run the command.
-- `reserve_ocr_quota(guild_id, n)` is called before queueing. It returns how many images are allowed, and the ingest summary explains any that were skipped.
+- `reserve_ocr_quota(guild_id, n)` is called before queueing. It sums `ocr_images` since the start of the quota week. It returns how many images are allowed, and the ingest summary explains any that were skipped.
 - Report queries take `min_week` from the tier's retention window, applied in one place in `database.py`.
 - Tests: one table-driven test per gate, plus quota edge cases (a batch that crosses the limit, a week rollover, a failed OCR refunding its quota).
 

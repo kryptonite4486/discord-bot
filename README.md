@@ -104,6 +104,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops reload <cog>` | Reload a cog |
 | `/ops sync` | Register commands globally, `/ops` in the control server, and remove duplicate per-server copies everywhere |
 | `/ops backup` | Write a database backup now |
+| `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
 
 `!reload <cog>` and `!sync` do the same from any server, for operators only.
 
@@ -182,6 +183,8 @@ WeeklyMetrics (
   PRIMARY KEY (GuildId, ChannelId, WeekStart, PlayerName, MetricType)
 )
 ```
+
+OCR usage is counted per server in `UsageLedger (GuildId, Day, Kind, Amount)`, one row per UTC day per measure: `ocr_batches`, `ocr_images` (every image sent to the vision model, failed ones included), `ocr_failed`, `ocr_seconds` and `ocr_wait_seconds` (time batches spent queued behind other batches). Nothing is limited yet; `/ops usage` reports it.
 
 Ingest always writes the current channel’s ID. Default reports filter to the current
 channel. Pass `scope: Entire server` on report commands for a multi-channel breakout

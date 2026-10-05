@@ -7,6 +7,7 @@ import logging
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import discord
@@ -846,12 +847,15 @@ class Ingest(commands.Cog):
 
         ahead = self._ocr_pending
         self._ocr_pending += 1
+        queued_at = time.monotonic()
+        started_at: float | None = None
         try:
             if ahead and progress is not None:
                 await progress(
                     0, len(images), f"Queued behind {ahead} other OCR batch(es)…"
                 )
             async with self._ocr_gate:
+                started_at = time.monotonic()
                 for index, image in enumerate(images, start=1):
                     if progress is not None:
                         await progress(index, len(images), image.filename)
@@ -897,6 +901,13 @@ class Ingest(commands.Cog):
                     )
         finally:
             self._ocr_pending -= 1
+            await self._record_usage(
+                guild_id,
+                queued_at=queued_at,
+                started_at=started_at,
+                images=saved + empty + len(failed),
+                failed=len(failed),
+            )
 
         summary_line = (
             f"Batch complete: **{total_rows}** metric row(s) across "
@@ -915,6 +926,33 @@ class Ingest(commands.Cog):
             + ["", "**Per file:**", file_rollups, ""]
             + sections
         ).strip()
+
+    async def _record_usage(
+        self,
+        guild_id: str,
+        *,
+        queued_at: float,
+        started_at: float | None,
+        images: int,
+        failed: int,
+    ) -> None:
+        """Add one OCR batch to the server's usage counters (never raises)."""
+        now = time.monotonic()
+        ran_from = started_at if started_at is not None else now
+        try:
+            await self.bot.db.add_usage(
+                guild_id,
+                datetime.now(timezone.utc).date().isoformat(),
+                {
+                    "ocr_batches": 1,
+                    "ocr_images": images,
+                    "ocr_failed": failed,
+                    "ocr_seconds": now - ran_from,
+                    "ocr_wait_seconds": ran_from - queued_at,
+                },
+            )
+        except Exception:
+            log.exception("Failed to record OCR usage for guild %s", guild_id)
 
     async def _send_long_followup(
         self,

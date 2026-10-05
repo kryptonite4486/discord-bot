@@ -1,4 +1,4 @@
-"""Operator-only commands: reload, sync, backup.
+"""Operator-only commands: reload, sync, backup, usage.
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -22,6 +23,8 @@ from bot.utils.command_sync import sync_commands, sync_control_guild
 log = logging.getLogger(__name__)
 
 NOT_OPERATOR_MESSAGE = "Only the bot operator can use this command."
+# Keeps /ops usage under Discord's 2,000-character message limit.
+MAX_USAGE_ROWS = 20
 
 # Cog reload alone does not refresh already-imported helpers. Reload deps in
 # dependency order (leaves first) so formatters pick up a fresh format_value.
@@ -108,6 +111,61 @@ async def run_command_sync(bot: commands.Bot) -> str:
         control_guild_id=s.control_guild_id,
     )
     return result.summary()
+
+
+def format_usage_report(
+    days: int,
+    by_guild: dict[str, dict[str, float]],
+    images_by_day: list[tuple[str, float]],
+    names: dict[str, str],
+) -> str:
+    """Markdown summary of OCR usage per server over the last ``days`` days."""
+    if not by_guild:
+        return f"No OCR usage recorded in the last {days} day(s)."
+
+    def row(label: str, u: dict[str, float]) -> str:
+        images = int(u.get("ocr_images", 0))
+        batches = int(u.get("ocr_batches", 0))
+        secs = u.get("ocr_seconds", 0.0)
+        per_image = f"{secs / images:.1f}s" if images else "-"
+        avg_wait = f"{u.get('ocr_wait_seconds', 0.0) / batches:.0f}s" if batches else "-"
+        return (
+            f"{label[:22]:<22} {batches:>5} {images:>6} "
+            f"{int(u.get('ocr_failed', 0)):>5} {secs / 60:>7.1f} {per_image:>6} {avg_wait:>6}"
+        )
+
+    ordered = sorted(
+        by_guild.items(), key=lambda kv: kv[1].get("ocr_images", 0), reverse=True
+    )
+    totals: dict[str, float] = {}
+    for _, u in ordered:
+        for k, v in u.items():
+            totals[k] = totals.get(k, 0.0) + v
+    lines = [
+        f"**OCR usage, last {days} day(s)** (UTC days)",
+        "```",
+        f"{'Server':<22} {'Batch':>5} {'Images':>6} {'Fail':>5} {'OCR min':>7} "
+        f"{'s/img':>6} {'Wait':>6}",
+        *(row(names.get(gid, gid), u) for gid, u in ordered[:MAX_USAGE_ROWS]),
+        *(
+            [f"…and {len(ordered) - MAX_USAGE_ROWS} more server(s)"]
+            if len(ordered) > MAX_USAGE_ROWS
+            else []
+        ),
+        "-" * 63,
+        row("Total", totals),
+        "```",
+    ]
+    if images_by_day:
+        peak_day, peak = max(images_by_day, key=lambda d: d[1])
+        lines.append(f"Busiest day: **{peak_day}** with **{int(peak)}** images.")
+        if len(images_by_day) <= 14:
+            lines.append(
+                "Images per day: "
+                + ", ".join(f"{d[5:]} {int(n)}" for d, n in images_by_day)
+            )
+    lines.append("_Wait = average time a batch queued behind other servers' batches._")
+    return "\n".join(lines)
 
 
 def is_operator(bot: commands.Bot, user_id: int) -> bool:
@@ -221,6 +279,22 @@ class Ops(commands.Cog):
             ephemeral=True,
         )
 
+    @ops.command(name="usage", description="OCR usage per server (images, OCR time, queue wait)")
+    @app_commands.describe(days="How many days back, including today (default 7)")
+    async def usage(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 1, 90] = 7,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        since = (datetime.now(timezone.utc).date() - timedelta(days=days - 1)).isoformat()
+        by_guild = await self.bot.db.usage_by_guild(since)
+        by_day = await self.bot.db.usage_by_day(since, "ocr_images")
+        names = {str(g.id): g.name for g in self.bot.guilds}
+        await interaction.followup.send(
+            format_usage_report(days, by_guild, by_day, names), ephemeral=True
+        )
+
     # Prefix fallbacks: operator only, in any server (useful before /ops is
     # registered in the control server).
     @commands.command(name="reload")
@@ -238,7 +312,7 @@ async def setup(bot: commands.Bot) -> None:
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup) are disabled"
+            "(/ops reload, sync, backup, usage) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

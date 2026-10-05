@@ -129,7 +129,13 @@ def _cog(max_concurrency: int = 1) -> Ingest:
         ocr_vision_timeout=5.0,
         ocr_max_concurrency=max_concurrency,
     )
-    return Ingest(SimpleNamespace(settings=settings))  # type: ignore[arg-type]
+    usage: list[tuple[str, str, dict]] = []
+
+    async def add_usage(guild_id, day, amounts):
+        usage.append((guild_id, day, amounts))
+
+    db = SimpleNamespace(add_usage=add_usage, usage=usage)
+    return Ingest(SimpleNamespace(settings=settings, db=db))  # type: ignore[arg-type]
 
 
 def _images(prefix: str, n: int) -> list[ImageSource]:
@@ -169,6 +175,13 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         # The two later batches were told they were queued.
         self.assertEqual(len(queued), 2)
         self.assertEqual(cog._ocr_pending, 0)
+        # One usage record per batch; batches that queued record the wait.
+        usage = cog.bot.db.usage
+        self.assertEqual(len(usage), 3)
+        self.assertEqual(sum(a["ocr_images"] for _, _, a in usage), 9)
+        waits = sorted(a["ocr_wait_seconds"] for _, _, a in usage)
+        self.assertLess(waits[0], 0.01)
+        self.assertGreater(waits[-1], 0.03)  # waited behind two 3-image batches
 
     async def test_concurrency_setting_is_respected(self) -> None:
         cog = _cog(max_concurrency=2)
@@ -216,6 +229,11 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Per file", head)
         self.assertIn("— ⚠️ no players found", summary)
         self.assertIn("— ❌ **failed**", summary)
+        (guild_id, _, amounts), = cog.bot.db.usage
+        self.assertEqual(guild_id, "g")
+        self.assertEqual(amounts["ocr_images"], 3)  # failed images still cost OCR time
+        self.assertEqual(amounts["ocr_failed"], 1)
+        self.assertEqual(amounts["ocr_batches"], 1)
 
 
 if __name__ == "__main__":
