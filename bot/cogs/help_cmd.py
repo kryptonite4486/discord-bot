@@ -70,8 +70,8 @@ the message with the dataset (e.g. `kills current`).
 Every image import needs a **dataset**: versus, tech, general, power, arena or kills.
 Lookalike screens: General vs Arena (member cards) and Power vs Kills (leaderboards).
 The bot flags (🚩) likely mistakes: Arena Power above total Power in the same week
-(misread) or equal to it for many players (mix-up), Power collapsing week over
-week, or Kills going down or jumping 5x+.
+(misread) or equal to it for many players (mix-up), Power collapsing or jumping
+5x+ week over week (e.g. a dropped decimal), or Kills going down or jumping 5x+.
 """
 
 
