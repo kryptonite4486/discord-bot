@@ -54,6 +54,9 @@ def load_vision_env() -> tuple[str, str, str, float]:
     return base_url, model, api_key, timeout
 
 
+DEFAULT_PLANNER_URL = "https://lastz-territory-planner.pages.dev"
+
+
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
@@ -74,6 +77,7 @@ class Settings:
     backup_dir: Path | None
     backup_keep: int
     allow_unmounted_data: bool
+    planner_url: str = DEFAULT_PLANNER_URL
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -116,6 +120,9 @@ class Settings:
             ),
             backup_keep=max(1, _optional_int("BACKUP_KEEP") or 14),
             allow_unmounted_data=_env_bool("ALLOW_UNMOUNTED_DATA", False),
+            planner_url=(
+                os.getenv("PLANNER_URL", "").strip().rstrip("/") or DEFAULT_PLANNER_URL
+            ),
         )
 
 

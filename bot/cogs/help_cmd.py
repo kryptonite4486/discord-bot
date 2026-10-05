@@ -52,6 +52,10 @@ Report scope (same server only — never cross-server)
   Player values are not summed across channels; each row stays separate.
   Charts are omitted when more than one channel is included.
 
+Planner
+  /planner          Link the territory planner web app
+  /planner plan:    Share a plan (paste a link from its Share link button)
+
 Help
   /help             Show this command list
   !helpbot          Same help (prefix)

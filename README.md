@@ -126,6 +126,14 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 | `/report growth <metric> [weeks]` | Growth rates |
 | `/report leaderboard <metric>` | Ranked list + chart |
 
+### Planner
+| Command | Description |
+|---------|-------------|
+| `/planner` | Post a button linking the [territory planner](https://lastz-territory-planner.pages.dev) web app |
+| `/planner plan:<link>` | Repost a plan from the planner's **Share link** button so the channel can open it |
+
+The planner is a separate static site (repo `territory-planner`, hosted on Cloudflare Pages); the bot only links to it. Plans live in the link itself, so the bot stores nothing. `plan` only accepts links on the planner's own address. Override the address with `PLANNER_URL`.
+
 Prefix equivalents use `COMMAND_PREFIX` (default `!`), e.g. `!addversus`, `!addarena`, `!addkills`, `!reportweek`. `!ingestimage <dataset> [week]` requires the dataset.
 
 ## OCR channel auto-ingest
@@ -210,7 +218,7 @@ The suite includes `tests/test_vision_samples.py`, which runs every screenshot i
 bot/
   main.py           # entrypoint
   config.py         # env settings
-  cogs/             # admin, ingest, reports
+  cogs/             # admin, help, ingest, planner, reports
   db/               # SQLite helpers
   ocr/              # Vision-model OCR (oMLX) and response parsing
   reporting/        # markdown + matplotlib

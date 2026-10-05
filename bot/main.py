@@ -22,6 +22,7 @@ COGS = (
     "bot.cogs.admin",
     "bot.cogs.help_cmd",
     "bot.cogs.ingest",
+    "bot.cogs.planner",
     "bot.cogs.reports",
 )
 
