@@ -1,8 +1,15 @@
 services:
   discord-bot:
     build: .
-    container_name: weekly-metrics-bot
+    container_name: lastz-assistant
     restart: unless-stopped
+    # Logs can include Discord usernames and player names, so cap them
+    # (5 files x 10 MB, oldest overwritten) instead of Docker's unbounded default.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     env_file:
       - .env
     volumes:

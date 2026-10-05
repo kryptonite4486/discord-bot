@@ -9,7 +9,7 @@ from discord.ext import commands
 from bot.utils.parsing import chunk_message
 
 HELP_TEXT = """\
-**Weekly Metrics Bot — Commands**
+**LastZ Assistant — Commands**
 
 Data is stored **per Discord server + channel**. Commands only work in a server
 (DMs unsupported).

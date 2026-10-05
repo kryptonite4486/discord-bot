@@ -30,8 +30,8 @@ COGS = (
 )
 
 
-class WeeklyMetricsBot(commands.Bot):
-    """Modular discord.py bot with SQLite-backed weekly metrics."""
+class LastZAssistant(commands.Bot):
+    """LastZ Assistant: modular discord.py bot with SQLite-backed weekly metrics."""
 
     def __init__(self, settings: Settings, *, backups_enabled: bool = False) -> None:
         intents = discord.Intents.default()
@@ -114,7 +114,7 @@ class WeeklyMetricsBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="weekly metrics",
+                name="alliance stats",
             )
         )
 
@@ -164,7 +164,7 @@ class WeeklyMetricsBot(commands.Bot):
 async def amain() -> None:
     settings = Settings.from_env()
     setup_logging(settings.log_level)
-    log.info("Starting Weekly Metrics Bot v%s", __version__)
+    log.info("Starting LastZ Assistant v%s", __version__)
     log.info(
         "OCR vision model=%s base_url=%s timeout=%.0fs",
         settings.ocr_vision_model,
@@ -185,7 +185,7 @@ async def amain() -> None:
         else "disabled",
     )
 
-    bot = WeeklyMetricsBot(settings, backups_enabled=backups_enabled)
+    bot = LastZAssistant(settings, backups_enabled=backups_enabled)
     # Prefer Bot.on_app_command_error when present; also bind tree for compatibility.
     bot.tree.on_error = bot.on_app_command_error
     async with bot:
@@ -193,7 +193,7 @@ async def amain() -> None:
         await bot.start(settings.discord_token)
 
 
-def _install_shutdown_handlers(bot: WeeklyMetricsBot) -> None:
+def _install_shutdown_handlers(bot: LastZAssistant) -> None:
     """Close the bot cleanly on SIGTERM/SIGINT.
 
     In Docker the bot runs as PID 1, where SIGTERM has no default action, so
