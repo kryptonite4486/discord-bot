@@ -64,6 +64,7 @@ class Settings:
     ocr_vision_model: str
     ocr_vision_api_key: str
     ocr_vision_timeout: float
+    ocr_max_concurrency: int
     default_week_start: str | None
     log_level: str
     dev_guild_id: int | None
@@ -96,6 +97,9 @@ class Settings:
             ocr_vision_model=vision_model,
             ocr_vision_api_key=vision_api_key,
             ocr_vision_timeout=vision_timeout,
+            # oMLX garbles this vision model's replies when it batches several
+            # requests together, so OCR runs one image at a time by default.
+            ocr_max_concurrency=max(1, _optional_int("OCR_MAX_CONCURRENCY") or 1),
             default_week_start=default_week,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             dev_guild_id=_optional_int("DEV_GUILD_ID"),

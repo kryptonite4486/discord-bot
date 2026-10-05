@@ -7,7 +7,7 @@ import logging
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import discord
 from discord import app_commands
@@ -15,6 +15,7 @@ from discord.ext import commands
 
 from bot.config import DATASET_KINDS, resolve_metric
 from bot.ocr import VisionOCR, extract_metrics_from_image
+from bot.ocr.vision import VisionOCRError
 from bot.utils.archive import (
     MAX_ZIP_IMAGES,
     ArchiveError,
@@ -73,6 +74,11 @@ def _is_zip_attachment(attachment: discord.Attachment) -> bool:
     return is_zip_upload(attachment.filename, attachment.content_type)
 
 
+def _summary_head(summary: str) -> str:
+    """Batch header + outcome line(s), without the per-file breakdown."""
+    return summary.split("\n\n**Per file:**", 1)[0]
+
+
 class Ingest(commands.Cog):
     """Commands for adding weekly player metrics."""
 
@@ -85,6 +91,11 @@ class Ingest(commands.Cog):
             api_key=s.ocr_vision_api_key,
             timeout=s.ocr_vision_timeout,
         )
+        # Bot-wide OCR queue: every batch (slash, zip, batch, auto-OCR channel)
+        # waits here, so the vision server only sees OCR_MAX_CONCURRENCY
+        # batches at a time no matter how many uploads arrive together.
+        self._ocr_gate = asyncio.Semaphore(s.ocr_max_concurrency)
+        self._ocr_pending = 0  # batches running or waiting for the gate
 
     def _default_week(self, week: str | None, *, context: str = "ingest") -> str:
         if week:
@@ -227,15 +238,17 @@ class Ingest(commands.Cog):
         last = 0.0
 
         async def update(index: int, total: int, filename: str) -> None:
+            # index 0 is a queue notice; ``filename`` carries the text.
             nonlocal last
             now = time.monotonic()
-            if now - last < min_interval:
+            if index and now - last < min_interval:
                 return
             last = now
+            line = (
+                f"⏳ {filename}" if index == 0 else f"OCR **{index}/{total}** — `{filename}`"
+            )
             try:
-                await message.edit(
-                    content=f"{label}\nOCR **{index}/{total}** — `{filename}`"
-                )
+                await message.edit(content=f"{label}\n{line}")
             except discord.HTTPException:
                 pass
 
@@ -567,7 +580,7 @@ class Ingest(commands.Cog):
             notes=notes,
         )
         if status is not None:
-            short = summary.split("\n\n", 1)[0]
+            short = _summary_head(summary)
             try:
                 await status.edit(content=f"{label}\n{short}"[:1900])
             except discord.HTTPException:
@@ -711,7 +724,7 @@ class Ingest(commands.Cog):
             notes=notes,
         )
         if status is not None:
-            short = summary.split("\n\n", 1)[0]
+            short = _summary_head(summary)
             try:
                 await status.edit(content=f"{label}\n{short}"[:1900])
             except discord.HTTPException:
@@ -827,47 +840,78 @@ class Ingest(commands.Cog):
         per_file: list[str] = []
         total_rows = 0
         players: set[str] = set()
+        saved = 0
+        empty = 0
+        failed: list[str] = []
 
-        for index, image in enumerate(images, start=1):
-            if progress is not None:
-                await progress(index, len(images), image.filename)
-            try:
-                detail, count, names, alerts = await self._process_attachment(
-                    image, kind, week_start, guild_id, channel_id
+        ahead = self._ocr_pending
+        self._ocr_pending += 1
+        try:
+            if ahead and progress is not None:
+                await progress(
+                    0, len(images), f"Queued behind {ahead} other OCR batch(es)…"
                 )
-                total_rows += count
-                players.update(names)
-                per_file.append(
-                    f"• `{image.filename}` — **{count}** row(s)"
-                    + "".join(f"\n  🚩 {a}" for a in alerts)
-                )
-                sections.append(
-                    f"### {index}/{len(images)} — `{image.filename}`\n{detail}"
-                )
-                log.info(
-                    "OCR batch progress %d/%d file=%s rows=%d",
-                    index,
-                    len(images),
-                    image.filename,
-                    count,
-                )
-            except Exception as exc:
-                log.exception("OCR ingest failed for %s", image.filename)
-                per_file.append(f"• `{image.filename}` — **failed** ({engine_label})")
-                sections.append(
-                    f"### {index}/{len(images)} — `{image.filename}`\n"
-                    f"**OCR failed** (`{engine_label}`): `{exc}`"
-                )
+            async with self._ocr_gate:
+                for index, image in enumerate(images, start=1):
+                    if progress is not None:
+                        await progress(index, len(images), image.filename)
+                    try:
+                        detail, count, names, alerts = await self._process_attachment(
+                            image, kind, week_start, guild_id, channel_id
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, VisionOCRError):
+                            log.error("OCR ingest failed for %s: %s", image.filename, exc)
+                        else:
+                            log.exception("OCR ingest failed for %s", image.filename)
+                        failed.append(image.filename)
+                        per_file.append(
+                            f"• `{image.filename}` — ❌ **failed** ({engine_label})"
+                        )
+                        sections.append(
+                            f"### {index}/{len(images)} — `{image.filename}`\n"
+                            f"**OCR failed** (`{engine_label}`): `{exc}`"
+                        )
+                        continue
+                    total_rows += count
+                    players.update(names)
+                    if count:
+                        saved += 1
+                        status = f"**{count}** row(s)"
+                    else:
+                        empty += 1
+                        status = "⚠️ no players found"
+                    per_file.append(
+                        f"• `{image.filename}` — {status}"
+                        + "".join(f"\n  🚩 {a}" for a in alerts)
+                    )
+                    sections.append(
+                        f"### {index}/{len(images)} — `{image.filename}`\n{detail}"
+                    )
+                    log.info(
+                        "OCR batch progress %d/%d file=%s rows=%d",
+                        index,
+                        len(images),
+                        image.filename,
+                        count,
+                    )
+        finally:
+            self._ocr_pending -= 1
 
         summary_line = (
             f"Batch complete: **{total_rows}** metric row(s) across "
-            f"**{len(players)}** player name(s) from **{len(images)}** image(s)."
+            f"**{len(players)}** player name(s) from **{len(images)}** image(s) — "
+            f"✅ {saved} saved · ⚠️ {empty} no players found · ❌ {len(failed)} failed."
         )
+        retry_lines = []
+        if failed:
+            names = ", ".join(f"`{PurePosixPath(f).name}`" for f in failed)
+            retry_lines = [f"Re-upload the failed image(s): {names}"]
         file_rollups = "\n".join(per_file)
         note_lines = [f"⚠️ {n}" for n in notes]
         return "\n".join(
             header
-            + [summary_line, truncated, *note_lines]
+            + [summary_line, *retry_lines, truncated, *note_lines]
             + ["", "**Per file:**", file_rollups, ""]
             + sections
         ).strip()

@@ -7,6 +7,7 @@ import json
 import logging
 import mimetypes
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,26 @@ from bot.utils.parsing import parse_numeric_value
 log = logging.getLogger(__name__)
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+
+# A full screenshot's JSON is ~100-350 tokens. The cap stops runaway
+# (repeating) generations in seconds; oMLX's keep-alive chunks mean the HTTP
+# timeout alone never fires while a runaway is still generating.
+MAX_TOKENS = 1024
+# Pauses before each retry of a transient failure (connection dropped, server
+# error, unreadable reply).
+RETRY_DELAYS = (2.0, 5.0)
+
+
+class VisionOCRError(RuntimeError):
+    """Vision OCR failed in a way retrying won't fix (e.g. auth, unknown model)."""
+
+
+class VisionTransientError(VisionOCRError):
+    """Connection dropped, server error, or empty reply; worth retrying."""
+
+
+class VisionReplyError(VisionTransientError):
+    """The model replied with something that isn't usable JSON; worth retrying."""
 
 
 def _mime_for(path: Path) -> str:
@@ -190,6 +211,7 @@ def _chat_completions(
     body = {
         "model": model,
         "temperature": 0,
+        "max_tokens": MAX_TOKENS,
         "messages": [
             {
                 "role": "user",
@@ -208,22 +230,28 @@ def _chat_completions(
         try:
             resp = client.post(url, headers=headers, json=body)
         except httpx.RequestError as exc:
-            raise RuntimeError(
+            raise VisionTransientError(
                 f"Vision OCR request failed contacting {url}: {exc}"
             ) from exc
         if resp.status_code >= 400:
             # Keep body short; never log Authorization / full keys
             detail = (resp.text or "")[:300].replace("\n", " ")
-            raise RuntimeError(
+            error = VisionTransientError if resp.status_code >= 500 else VisionOCRError
+            raise error(
                 f"Vision OCR HTTP {resp.status_code} from {url} "
                 f"(model={model}): {detail}"
             )
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise VisionTransientError(f"Vision API returned non-JSON body: {exc}") from exc
 
     try:
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected vision API response shape: {exc}") from exc
+        raise VisionTransientError(
+            f"Unexpected vision API response shape: {exc}"
+        ) from exc
 
     if isinstance(content, list):
         # Some servers return multimodal content parts
@@ -235,7 +263,7 @@ def _chat_completions(
                 parts.append(part)
         content = "\n".join(parts)
     if not isinstance(content, str) or not content.strip():
-        raise ValueError("Vision API returned empty content")
+        raise VisionTransientError("Vision API returned empty content")
     return content
 
 
@@ -258,28 +286,56 @@ def extract_metrics_via_vision(
     prompt = _prompt_for_kind(kind)
     data_url = _image_data_url(path)
 
-    log.info(
-        "Vision OCR request model=%s kind=%s url=%s",
-        model,
-        kind,
-        base_url.rstrip("/") + "/chat/completions",
-    )
-    raw_text = _chat_completions(
-        base_url=base_url,
-        model=model,
-        api_key=api_key,
-        timeout=timeout,
-        prompt=prompt,
-        data_url=data_url,
-    )
+    attempts = 1 + len(RETRY_DELAYS)
+    for attempt in range(1, attempts + 1):
+        log.info(
+            "Vision OCR request model=%s kind=%s attempt=%d/%d url=%s",
+            model,
+            kind,
+            attempt,
+            attempts,
+            base_url.rstrip("/") + "/chat/completions",
+        )
+        try:
+            raw_text = _chat_completions(
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                timeout=timeout,
+                prompt=prompt,
+                data_url=data_url,
+            )
+            try:
+                rows = _parse_json_rows(raw_text)
+            except (json.JSONDecodeError, ValueError) as exc:
+                # Keep the start of the reply so bad output can be diagnosed.
+                log.warning(
+                    "Unreadable vision reply for %s (attempt %d/%d): %s | reply: %r",
+                    path.name,
+                    attempt,
+                    attempts,
+                    exc,
+                    raw_text[:500],
+                )
+                raise VisionReplyError(
+                    f"model reply was not valid JSON ({exc})"
+                ) from exc
+            break
+        except VisionTransientError as exc:
+            if attempt == attempts:
+                raise
+            delay = RETRY_DELAYS[attempt - 1]
+            log.warning(
+                "Vision OCR attempt %d/%d failed for %s: %s; retrying in %.0fs",
+                attempt,
+                attempts,
+                path.name,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+
     warnings: list[str] = []
-
-    try:
-        rows = _parse_json_rows(raw_text)
-    except (json.JSONDecodeError, ValueError) as exc:
-        warnings.append(f"Failed to parse vision JSON: {exc}")
-        return OCRResult(kind=kind, metrics=[], raw_text=raw_text, warnings=warnings)
-
     metrics, row_warnings = _rows_to_metrics(
         rows, kind=kind
     )

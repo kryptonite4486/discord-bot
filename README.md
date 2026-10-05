@@ -77,6 +77,9 @@ Screenshots are read by a local OpenAI-compatible vision server (e.g. oMLX). Thi
 | `OCR_VISION_MODEL` | `Qwen2.5-VL-7B-Instruct` | Must match the name registered in oMLX |
 | `OCR_VISION_API_KEY` | _(empty)_ | Put your oMLX API token here; requests still send `Authorization` if blank |
 | `OCR_VISION_TIMEOUT` | `120` | Seconds |
+| `OCR_MAX_CONCURRENCY` | `1` | Images sent to the vision server at once, across all uploads |
+
+**Reliability.** oMLX batches concurrent requests, and with Qwen2.5-VL that garbles replies (broken JSON, runaway generations) and can exhaust GPU memory (`metal::malloc` errors), failing every in-flight request at once. So the bot keeps one bot-wide OCR queue: uploads that arrive together wait their turn ("Queued behind N other OCR batch(es)") and images go to the model one at a time. Each request is capped at 1024 output tokens, and dropped connections, server errors and unreadable replies are retried twice. Batch summaries count images as saved, no players found, or failed, and list failed files to re-upload. Unreadable replies are logged (first 500 characters) for diagnosis.
 
 `docker-compose.yml` maps `host.docker.internal` to the host gateway so the container can reach oMLX on the Mac. After setting the key, rebuild/restart:
 
