@@ -83,6 +83,7 @@ class Settings:
     message_content_intent: bool
     backup_dir: Path | None
     backup_keep: int
+    backup_max_age_days: int
     data_retention_days: int
     allow_unmounted_data: bool
     planner_url: str = DEFAULT_PLANNER_URL
@@ -128,6 +129,8 @@ class Settings:
                 else None
             ),
             backup_keep=max(1, _optional_int("BACKUP_KEEP") or 14),
+            # Oldest a backup of any kind may get (the newest one is always kept).
+            backup_max_age_days=max(1, _optional_int("BACKUP_MAX_AGE_DAYS") or 30),
             # Days a removed server's data is kept in case the bot is re-added.
             data_retention_days=max(1, _optional_int("DATA_RETENTION_DAYS") or 30),
             allow_unmounted_data=_env_bool("ALLOW_UNMOUNTED_DATA", False),

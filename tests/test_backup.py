@@ -23,6 +23,7 @@ from bot.utils.backup import (  # noqa: E402
     last_backup_time,
     list_backups,
     prune,
+    prune_older_than,
 )
 
 T0 = datetime(2026, 10, 4, 12, 0, 0, tzinfo=timezone.utc)
@@ -84,6 +85,55 @@ class BackupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [p.name for p in self.backup_dir.iterdir()], ["notes.txt"]
         )
+
+    def _touch(self, *names: str) -> None:
+        self.backup_dir.mkdir(exist_ok=True)
+        for name in names:
+            (self.backup_dir / name).write_bytes(b"")
+
+    def _names(self) -> list[str]:
+        return sorted(p.name for p in self.backup_dir.iterdir())
+
+    def test_age_limit_applies_to_every_kind(self) -> None:
+        self._touch(
+            "weekly-20260801-000000-manual.db",  # 64 days old
+            "weekly-20260903-000000-manual.db",  # 31 days old
+            "weekly-20260905-000000-manual.db",  # 29 days old
+            "weekly-20260902-120000-daily.db",  # 32 days old
+            "weekly-20261003-000000-daily.db",
+            "notes.txt",
+        )
+        removed = prune_older_than(self.backup_dir, timedelta(days=30), now=T0)
+        self.assertEqual(len(removed), 3)
+        self.assertEqual(
+            self._names(),
+            ["notes.txt", "weekly-20260905-000000-manual.db", "weekly-20261003-000000-daily.db"],
+        )
+
+    def test_age_limit_keeps_newest_backup(self) -> None:
+        # Nothing new for months (bot off, disk full): keep the last copy.
+        self._touch("weekly-20260101-000000-daily.db", "weekly-20260201-000000-manual.db")
+        prune_older_than(self.backup_dir, timedelta(days=30), now=T0)
+        self.assertEqual(self._names(), ["weekly-20260201-000000-manual.db"])
+
+    def test_age_limit_with_no_folder(self) -> None:
+        self.assertEqual(prune_older_than(self.backup_dir, timedelta(days=30), now=T0), [])
+
+    async def test_hourly_task_prunes_even_when_no_backup_is_due(self) -> None:
+        from types import SimpleNamespace
+
+        from bot.cogs.admin import Admin
+
+        recent = datetime.now(timezone.utc) - timedelta(hours=2)
+        self._touch(
+            "weekly-20200101-000000-manual.db",
+            f"weekly-{recent:%Y%m%d-%H%M%S}-daily.db",
+        )
+        settings = SimpleNamespace(backup_dir=self.backup_dir, backup_keep=14, backup_max_age_days=30)
+        cog = Admin(SimpleNamespace(settings=settings, db=self.db))  # type: ignore[arg-type]
+        await cog.daily_backup.coro(cog)
+        # No new daily backup (the last one is 2 hours old); the old manual one is gone.
+        self.assertEqual(self._names(), [f"weekly-{recent:%Y%m%d-%H%M%S}-daily.db"])
 
     def test_no_backups_yet(self) -> None:
         self.assertIsNone(last_backup_time(self.backup_dir, "daily"))

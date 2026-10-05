@@ -179,7 +179,8 @@ async def amain() -> None:
     log.info(
         "Database=%s backups=%s",
         settings.database_path,
-        f"{settings.backup_dir} (keep {settings.backup_keep} daily)"
+        f"{settings.backup_dir} (keep {settings.backup_keep} daily; "
+        f"none older than {settings.backup_max_age_days} days)"
         if backups_enabled
         else "disabled",
     )

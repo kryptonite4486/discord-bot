@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -22,8 +22,10 @@ log = logging.getLogger(__name__)
 
 BackupKind = Literal["daily", "manual"]
 
-# Manual (/admin backup) copies are kept separately so on-demand backups never
-# push scheduled ones out of the retention window.
+# Manual copies (/ops backup and the safety copies taken before renames and
+# deletions) are counted separately so on-demand backups never push scheduled
+# ones out of the retention window. Every kind is also limited by age
+# (BACKUP_MAX_AGE_DAYS, see prune_older_than).
 MANUAL_KEEP = 10
 
 _NAME_RE = re.compile(r"^weekly-(\d{8}-\d{6})-(daily|manual)\.db$")
@@ -55,13 +57,35 @@ def prune(backup_dir: Path, kind: BackupKind, keep: int) -> list[Path]:
     return stale
 
 
-def last_backup_time(backup_dir: Path, kind: BackupKind) -> datetime | None:
-    backups = list_backups(backup_dir, kind)
-    if not backups:
-        return None
-    m = _NAME_RE.match(backups[-1].name)
+def _taken_at(path: Path) -> datetime:
+    m = _NAME_RE.match(path.name)
     assert m is not None
     return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+
+
+def prune_older_than(
+    backup_dir: Path, max_age: timedelta, *, now: datetime | None = None
+) -> list[Path]:
+    """Delete backups of every kind older than ``max_age``; return removed paths.
+
+    The newest backup is always kept, even if it's too old, so that a stretch
+    without new backups (bot offline, disk full) never leaves no backup at all.
+    """
+    now = now or datetime.now(timezone.utc)
+    backups = sorted(
+        (p for kind in ("daily", "manual") for p in list_backups(backup_dir, kind)),
+        key=_taken_at,
+    )
+    stale = [p for p in backups[:-1] if now - _taken_at(p) > max_age]
+    for path in stale:
+        path.unlink(missing_ok=True)
+        log.info("Pruned backup older than %d day(s): %s", max_age.days, path.name)
+    return stale
+
+
+def last_backup_time(backup_dir: Path, kind: BackupKind) -> datetime | None:
+    backups = list_backups(backup_dir, kind)
+    return _taken_at(backups[-1]) if backups else None
 
 
 async def create_backup(

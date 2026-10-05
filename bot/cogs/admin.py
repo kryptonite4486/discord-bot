@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from bot.utils.backup import create_backup, last_backup_time
+from bot.utils.backup import create_backup, last_backup_time, prune_older_than
 from bot.utils.names import group_variants
 from bot.utils.parsing import chunk_message
 from bot.utils.guild import (
@@ -89,18 +89,25 @@ class Admin(commands.Cog):
 
     # Checks hourly rather than sleeping 24h, so a restart or a sleeping Mac
     # delays the daily backup by at most an hour instead of skipping it.
+    # Each check also removes backups past BACKUP_MAX_AGE_DAYS, so deleted
+    # data doesn't linger in old copies.
     @tasks.loop(hours=1)
     async def daily_backup(self) -> None:
         settings = self.bot.settings
         last = last_backup_time(settings.backup_dir, "daily")
-        if last is not None and datetime.now(timezone.utc) - last < BACKUP_INTERVAL:
-            return
+        if last is None or datetime.now(timezone.utc) - last >= BACKUP_INTERVAL:
+            try:
+                await create_backup(
+                    self.bot.db, settings.backup_dir, "daily", keep=settings.backup_keep
+                )
+            except Exception:
+                log.exception("Scheduled database backup failed")
         try:
-            await create_backup(
-                self.bot.db, settings.backup_dir, "daily", keep=settings.backup_keep
+            prune_older_than(
+                settings.backup_dir, timedelta(days=settings.backup_max_age_days)
             )
         except Exception:
-            log.exception("Scheduled database backup failed")
+            log.exception("Pruning old backups failed")
 
     # Hidden from members without Administrator; each command checks too, in
     # case a server widens access under Server Settings → Integrations.

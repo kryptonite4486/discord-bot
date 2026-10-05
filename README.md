@@ -42,7 +42,7 @@ Runtime data lives **outside the repo**, so deleting or re-cloning the code neve
 
 `docker-compose.yml` refuses to start if either variable is unset. Inside the container, the bot also refuses to start if `/app/data` isn't a mounted folder (override with `ALLOW_UNMOUNTED_DATA=1`), and disables backups if `/app/backups` isn't mounted.
 
-**Backups.** The bot writes `weekly-YYYYMMDD-HHMMSS-daily.db` once a day (checked hourly, so restarts or a sleeping Mac delay it by at most an hour) and keeps the newest `BACKUP_KEEP` (default 14). `/ops backup` (operator only) writes a `-manual.db` copy on demand; the newest 10 are kept. Backups go through SQLite's `VACUUM INTO`, so they're consistent even while the bot is writing, and appear only once complete. Timestamps are UTC.
+**Backups.** The bot writes `weekly-YYYYMMDD-HHMMSS-daily.db` once a day (checked hourly, so restarts or a sleeping Mac delay it by at most an hour) and keeps the newest `BACKUP_KEEP` (default 14). `/ops backup` (operator only) writes a `-manual.db` copy on demand, as do the safety copies taken before renames and deletions; the newest 10 are kept. **No backup is kept longer than `BACKUP_MAX_AGE_DAYS` (default 30)**, checked hourly, except that the single newest backup is never removed, so a stretch without new backups can't leave none at all. Backups go through SQLite's `VACUUM INTO`, so they're consistent even while the bot is writing, and appear only once complete. Timestamps are UTC.
 
 **Don't open or copy the live `weekly.db` from the Mac while the bot is running.** The database uses WAL mode, whose locking doesn't work across Docker Desktop's VM boundary, and a plain copy can miss recent writes. Open a backup instead, or stop the bot first.
 
@@ -200,7 +200,7 @@ When the bot is removed from a server (kicked, banned, or the server deleted), t
 
 Server admins can delete data immediately with `/data delete` (one channel, or the whole server).
 
-Deleted data still exists in backups until they rotate out: daily backups are kept for `BACKUP_KEEP` days, and the newest 10 manual backups (which include the safety copies taken before deletions) are kept regardless of age. Usage counters (`UsageLedger`) are not deleted; they hold only per-day counts, no player data.
+Deleted data still exists in backups until they age out, at most `BACKUP_MAX_AGE_DAYS` (default 30) days after the deletion, while the bot is running. So with the defaults, a removed server's data is fully gone within about 60 days of the bot's removal (30 days' retention plus 30 days of backups), or 30 days after `/data delete`. Usage counters (`UsageLedger`) are not deleted; they hold only per-day counts, no player data.
 
 OCR usage is counted per server in `UsageLedger (GuildId, Day, Kind, Amount)`, one row per UTC day per measure: `ocr_batches`, `ocr_images` (every image sent to the vision model, failed ones included), `ocr_failed`, `ocr_seconds` and `ocr_wait_seconds` (time batches spent queued behind other batches). Nothing is limited yet; `/ops usage` reports it.
 
