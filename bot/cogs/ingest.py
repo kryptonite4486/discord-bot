@@ -998,10 +998,16 @@ class Ingest(commands.Cog):
             if progress is not None and own_ahead:
                 await progress(0, len(images), f"{own_ahead} queued ahead")
 
+        # Paid plans get a bigger share of OCR turns (Standard when not enforced).
+        tiers = getattr(self.bot, "tiers", None)
+        priority = await tiers.queue_priority(guild_id) if tiers is not None else 0
+
         queued_at = time.monotonic()
         started_at: float | None = None
         try:
-            async with self.ocr_queue.slot(guild_id, on_queued=on_queued):
+            async with self.ocr_queue.slot(
+                guild_id, priority=priority, on_queued=on_queued
+            ):
                 started_at = time.monotonic()
                 for index, image in enumerate(images, start=1):
                     if progress is not None:

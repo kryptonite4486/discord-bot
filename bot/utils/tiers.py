@@ -45,6 +45,8 @@ class TierPolicy:
     history_weeks: int | None = None
     max_channels: int | None = None  # tracked channels (datasets); None = unlimited
     features: frozenset[str] = field(default_factory=frozenset)
+    # OCR queue level: 0 Standard, 1 Priority, 2 Highest (bot/utils/fair_queue.py).
+    queue_priority: int = 0
 
     def allows(self, feature: str) -> bool:
         return feature in self.features
@@ -66,6 +68,7 @@ MID = TierPolicy(
     history_weeks=26,
     max_channels=3,
     features=frozenset({"zip_batch", "advanced_reports", "name_tools"}),
+    queue_priority=1,
 )
 FULL = TierPolicy(
     "full",
@@ -74,6 +77,7 @@ FULL = TierPolicy(
     ocr_images_per_week=1000,
     max_channels=None,
     features=MID.features | {"multi_channel_reports"},
+    queue_priority=2,
 )
 TIERS = {t.key: t for t in (FREE, MID, FULL)}
 PAID_TIERS = (MID, FULL)
@@ -237,6 +241,7 @@ class Tiers:
         if not self.enforced:
             return None, status
         return status.policy.min_week(), status
+
     async def check_channel(
         self, guild_id: str, channel_id: str
     ) -> tuple[bool, TierStatus, list[str]]:
@@ -263,6 +268,12 @@ class Tiers:
             )
             return True, status, tracked
         return False, status, tracked
+
+    async def queue_priority(self, guild_id: str) -> int:
+        """OCR queue level for a new request. Not enforced: everyone is Standard."""
+        if not self.enforced:
+            return 0
+        return (await self.status(guild_id)).policy.queue_priority
 
     async def ocr_used_this_week(self, guild_id: str) -> int:
         since = quota_week_start().isoformat()
