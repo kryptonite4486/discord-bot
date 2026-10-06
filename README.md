@@ -177,7 +177,7 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 |---------|-------------|
 | `/premium` | This server's plan, screenshots used this week, and what each plan includes |
 
-Each server is on **Free**, **Alliance** or **Command**: the highest plan among its active entitlements (paid, gifted or trial, in `GuildEntitlement`). Plans differ in screenshots per week (25 / 250 / 1,000, Sunday to Sunday UTC) and in these features:
+Each server is on **Free**, **Alliance** or **Command**: the highest plan among its active entitlements (paid, gifted or trial, in `GuildEntitlement`). Plans differ in screenshots per week (25 / 250 / 1,000, Sunday to Sunday UTC), in how many weeks of history reports show (the last 4 / 26 weeks including this one / all), and in these features:
 
 | Feature | Plan needed |
 |---|---|
@@ -185,6 +185,8 @@ Each server is on **Free**, **Alliance** or **Command**: the highest plan among 
 | `/report player`, `/report trend`, `/report growth` | Alliance |
 | `/admin duplicates`, `/admin rename-player` | Alliance |
 | Reports over more than one channel | Command |
+
+Older weeks are hidden from reports, never deleted: upgrading shows them again. When a report leaves weeks out it ends with a 🔒 note saying how many and which plan shows them.
 
 Everything else is free. **Limits are only enforced when `TIERS_ENFORCED=true`.** Until then nothing is blocked; the log records what would have been (`Tier check (not enforced)`, `OCR quota (not enforced)`), so you can gift plans with `/ops grant` and check the log before switching enforcement on. Every grant, revoke and extend is recorded in `EntitlementAudit`.
 

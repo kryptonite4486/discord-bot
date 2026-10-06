@@ -36,18 +36,29 @@ class TierPolicy:
     name: str  # shown to users
     rank: int
     ocr_images_per_week: int
+    # Weeks of history reports show, counting the current week; None = all.
+    # Older weeks are hidden, never deleted.
+    history_weeks: int | None = None
     features: frozenset[str] = field(default_factory=frozenset)
 
     def allows(self, feature: str) -> bool:
         return feature in self.features
 
+    def min_week(self, today: date | None = None) -> str | None:
+        """Oldest week start (Sunday, ISO) reports may show; None = no limit."""
+        if self.history_weeks is None:
+            return None
+        start = quota_week_start_of(today or datetime.now(timezone.utc).date())
+        return (start - timedelta(weeks=self.history_weeks - 1)).isoformat()
 
-FREE = TierPolicy("free", "Free", 0, ocr_images_per_week=25)
+
+FREE = TierPolicy("free", "Free", 0, ocr_images_per_week=25, history_weeks=4)
 MID = TierPolicy(
     "mid",
     "Alliance",
     1,
     ocr_images_per_week=250,
+    history_weeks=26,
     features=frozenset({"zip_batch", "advanced_reports", "name_tools"}),
 )
 FULL = TierPolicy(
@@ -75,8 +86,33 @@ def lowest_tier_with(feature: str) -> TierPolicy:
 
 def quota_week_start(now: datetime | None = None) -> date:
     """Sunday (UTC) that starts the current OCR quota week."""
-    today = (now or datetime.now(timezone.utc)).date()
-    return today - timedelta(days=(today.weekday() + 1) % 7)
+    return quota_week_start_of((now or datetime.now(timezone.utc)).date())
+
+
+def quota_week_start_of(day: date) -> date:
+    """Sunday that starts ``day``'s week (same weeks as WeeklyMetrics)."""
+    return day - timedelta(days=(day.weekday() + 1) % 7)
+
+
+def lowest_tier_showing(week_start: str, today: date | None = None) -> TierPolicy:
+    """Cheapest tier whose history window includes ``week_start``."""
+    for tier in (FREE, MID):
+        if week_start >= tier.min_week(today):
+            return tier
+    return FULL
+
+
+def hidden_weeks_note(hidden: list[str], status: TierStatus, today: date | None = None) -> str:
+    """Report footer for weeks left out by the server's history window."""
+    if not hidden:
+        return ""
+    needed = lowest_tier_showing(min(hidden), today)
+    n = len(hidden)
+    return (
+        f"🔒 {n} older week{'s' if n != 1 else ''} hidden: the **{status.policy.name}** plan "
+        f"shows the last {status.policy.history_weeks} weeks. "
+        f"The **{needed.name}** plan shows {'it' if n == 1 else 'them'}; see `/premium`."
+    )
 
 
 @dataclass(frozen=True)
@@ -156,6 +192,16 @@ class Tiers:
             )
             return True, status
         return False, status
+
+    async def history_window(self, guild_id: str) -> tuple[str | None, TierStatus]:
+        """(min_week, status) for reports. min_week None: show every week.
+
+        Not enforced: always None, so reports are unchanged.
+        """
+        status = await self.status(guild_id)
+        if not self.enforced:
+            return None, status
+        return status.policy.min_week(), status
 
     async def ocr_used_this_week(self, guild_id: str) -> int:
         since = quota_week_start().isoformat()

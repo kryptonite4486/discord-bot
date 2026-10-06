@@ -19,7 +19,7 @@ from bot.utils.guild import (
     guild_id_from_interaction,
 )
 from bot.utils.parsing import chunk_fenced_md, parse_week_start
-from bot.utils.tiers import ensure_feature, requires_feature
+from bot.utils.tiers import TierStatus, ensure_feature, hidden_weeks_note, requires_feature
 
 log = logging.getLogger(__name__)
 
@@ -325,6 +325,33 @@ class Reports(commands.Cog):
         except ValueError as exc:
             await interaction.followup.send(str(exc))
             return None
+    async def _history_window(self, guild_id: str) -> tuple[str | None, TierStatus | None]:
+        """(min_week, status) from the server's plan; (None, None) = show all."""
+        tiers = getattr(self.bot, "tiers", None)
+        if tiers is None:
+            return None, None
+        return await tiers.history_window(guild_id)
+
+    async def _hidden_note(
+        self,
+        rs: ReportScope,
+        window: tuple[str | None, TierStatus | None],
+        **filters,
+    ) -> str:
+        """Footer naming the weeks this report left out, or ''."""
+        min_week, status = window
+        if min_week is None or status is None:
+            return ""
+        hidden = await self.bot.db.hidden_weeks(
+            rs.guild_id,
+            min_week,
+            channel_ids=rs.channel_ids,
+            include_unassigned=False,
+            **filters,
+        )
+        note = hidden_weeks_note(hidden, status)
+        return f"\n\n{note}" if note else ""
+
     def _enrich_channel_names(
         self,
         interaction: discord.Interaction,
@@ -383,11 +410,13 @@ class Reports(commands.Cog):
         if not week:
             week = (await self.bot.db.guild_settings(rs.guild_id))["default_week"]
         week_start = parse_week_start(week)
+        window = await self._history_window(rs.guild_id)
         rows = await self.bot.db.get_week_metrics(
             rs.guild_id,
             week_start,
             channel_ids=rs.channel_ids,
             include_unassigned=False,
+            min_week=window[0],
         )
         names = self._enrich_channel_names(interaction, rows, rs)
         text = formatters.week_summary_text(
@@ -396,6 +425,7 @@ class Reports(commands.Cog):
             show_channel=rs.show_channel,
             channel_names=names,
         )
+        text += await self._hidden_note(rs, window, week_start=week_start)
         await self._send_text(interaction, text)
 
     @report.command(name="player", description="Trend report for one player")
@@ -425,11 +455,13 @@ class Reports(commands.Cog):
         )
         if rs is None:
             return
+        window = await self._history_window(rs.guild_id)
         rows = await self.bot.db.get_player_metrics(
             rs.guild_id,
             name,
             channel_ids=rs.channel_ids,
             include_unassigned=False,
+            min_week=window[0],
         )
         names = self._enrich_channel_names(interaction, rows, rs)
         text = formatters.player_report_text(
@@ -438,6 +470,7 @@ class Reports(commands.Cog):
             show_channel=rs.show_channel,
             channel_names=names,
         )
+        text += await self._hidden_note(rs, window, player_name=name)
         png = (
             charts.player_trend_chart(name, rows)
             if chart and rows and not rs.show_channel
@@ -530,12 +563,14 @@ class Reports(commands.Cog):
         if rs is None:
             return
         metric_type = resolve_metric(metric.value)
+        window = await self._history_window(rs.guild_id)
         rows = await self.bot.db.get_trends(
             rs.guild_id,
             metric_type,
             weeks=weeks,
             channel_ids=rs.channel_ids,
             include_unassigned=False,
+            min_week=window[0],
         )
         names = self._enrich_channel_names(interaction, rows, rs)
         text = formatters.trend_summary_text(
@@ -544,6 +579,7 @@ class Reports(commands.Cog):
             show_channel=rs.show_channel,
             channel_names=names,
         )
+        text += await self._hidden_note(rs, window, metric_type=metric_type, recent=weeks)
         png = charts.metric_trend_chart(metric_type, rows) if not rs.show_channel else None
         file = discord.File(png, filename=f"{metric_type}_trend.png") if png else None
         await self._send_text(interaction, text, file=file)
@@ -578,12 +614,14 @@ class Reports(commands.Cog):
         metric_type = resolve_metric(metric.value)
 
         try:
+            window = await self._history_window(rs.guild_id)
             rows = await self.bot.db.get_growth_rates(
                 rs.guild_id,
                 metric_type,
                 weeks=weeks,
                 channel_ids=rs.channel_ids,
                 include_unassigned=False,
+                min_week=window[0],
             )
             names = self._enrich_channel_names(interaction, rows, rs)
             text = formatters.growth_report_text(
@@ -592,6 +630,9 @@ class Reports(commands.Cog):
                 rows,
                 show_channel=rs.show_channel,
                 channel_names=names,
+            )
+            text += await self._hidden_note(
+                rs, window, metric_type=metric_type, recent=weeks
             )
 
             attachments: list[discord.File] = []
@@ -687,6 +728,7 @@ class Reports(commands.Cog):
         if rs is None:
             return
         week_start = parse_week_start(week) if week else None
+        window = await self._history_window(rs.guild_id)
         rows = await self.bot.db.get_leaderboard(
             rs.guild_id,
             metric_type,
@@ -694,6 +736,7 @@ class Reports(commands.Cog):
             limit=limit,
             channel_ids=rs.channel_ids,
             include_unassigned=False,
+            min_week=window[0],
         )
         names = self._enrich_channel_names(interaction, rows, rs)
         resolved_week = rows[0]["WeekStart"] if rows else (week_start or "n/a")
@@ -712,6 +755,13 @@ class Reports(commands.Cog):
             )
             if png and len(rows) > chart_cap:
                 text += f"\n\n(Chart shows top {chart_cap} of {len(rows)} players.)"
+        # No week given: the latest week with data, which may itself be hidden.
+        text += await self._hidden_note(
+            rs,
+            window,
+            metric_type=metric_type,
+            **({"week_start": week_start} if week_start else {"recent": 1}),
+        )
         file = (
             discord.File(png, filename=f"{metric_type}_leaderboard.png") if png else None
         )

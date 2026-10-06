@@ -25,6 +25,8 @@ def format_premium(status: TierStatus, used: int, *, enforced: bool) -> str:
         f"{'':<34}{FREE.name:>8}{MID.name:>10}{FULL.name:>9}",
         f"{'Screenshots per week':<34}"
         f"{FREE.ocr_images_per_week:>8}{MID.ocr_images_per_week:>10}{FULL.ocr_images_per_week:>9}",
+        f"{'Weeks of history in reports':<34}"
+        f"{_weeks(FREE):>8}{_weeks(MID):>10}{_weeks(FULL):>9}",
     ]
     for key, label in FEATURE_LABELS.items():
         marks = ["✓" if t.allows(key) else "–" for t in (FREE, MID, FULL)]
@@ -41,6 +43,10 @@ def format_premium(status: TierStatus, used: int, *, enforced: bool) -> str:
         )
     lines.append(f"Paid plans aren't on sale yet. Questions: {CONTACT}")
     return "\n".join(lines)
+
+
+def _weeks(policy) -> str:
+    return "All" if policy.history_weeks is None else str(policy.history_weeks)
 
 
 # Short labels for the comparison table, in display order.
