@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS EntitlementAudit (
     Detail  TEXT
 );
 
+-- Gift expiry reminders already sent (bot/utils/gift_reminders.py), one row
+-- per entitlement, stage and end date. Keyed on EndsAt so extending an
+-- entitlement re-arms its reminders.
+CREATE TABLE IF NOT EXISTS EntitlementReminder (
+    EntitlementId INTEGER NOT NULL,
+    Stage         TEXT    NOT NULL,  -- 'operator_7d' | 'server_3d'
+    EndsAt        TEXT    NOT NULL,
+    SentAt        TEXT    NOT NULL,
+    PRIMARY KEY (EntitlementId, Stage, EndsAt)
+);
+
 -- Per-server usage, one row per UTC day and measure (see USAGE_KINDS).
 CREATE TABLE IF NOT EXISTS UsageLedger (
     GuildId TEXT NOT NULL,
@@ -1304,6 +1315,24 @@ class Database:
             (actor_id, action, guild_id, detail),
         )
 
+    async def reminder_sent(self, entitlement_id: int, stage: str, ends_at: str) -> bool:
+        async with self.conn.execute(
+            "SELECT 1 FROM EntitlementReminder WHERE EntitlementId = ? AND Stage = ? AND EndsAt = ?",
+            (entitlement_id, stage, ends_at),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def mark_reminder_sent(
+        self, entitlement_id: int, stage: str, ends_at: str, *, sent_at: str
+    ) -> None:
+        async with self._write_lock:
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO EntitlementReminder (EntitlementId, Stage, EndsAt, SentAt) "
+                "VALUES (?, ?, ?, ?)",
+                (entitlement_id, stage, ends_at, sent_at),
+            )
+            await self.conn.commit()
+
     # --- Server settings (/setup) -------------------------------------------
 
     async def guild_settings(self, guild_id: str) -> dict[str, Any]:
@@ -1313,6 +1342,17 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return {"trivia_channel_id": (row["TriviaChannelId"] or None) if row else None}
+
+    async def report_channel_id(self, guild_id: str) -> str | None:
+        """The server's report channel from /setup (scheduled posts, gift
+        notices), or None when unset or before GuildSettings has the column."""
+        if "ReportChannelId" not in await self._table_columns("GuildSettings"):
+            return None
+        async with self.conn.execute(
+            "SELECT ReportChannelId FROM GuildSettings WHERE GuildId = ?", (guild_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (row["ReportChannelId"] or None) if row else None
 
     async def set_trivia_channel(self, guild_id: str, channel_id: str | None) -> None:
         async with self._write_lock:
