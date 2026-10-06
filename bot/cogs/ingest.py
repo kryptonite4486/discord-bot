@@ -31,7 +31,7 @@ from bot.utils.guild import (
 )
 from bot.utils.fair_queue import FairQueue
 from bot.utils.names import reconcile_names
-from bot.utils.tiers import requires_feature
+from bot.utils.tiers import ensure_channel, requires_feature
 from bot.utils.plausibility import check_batch
 from bot.utils.parsing import (
     format_value,
@@ -360,6 +360,8 @@ class Ingest(commands.Cog):
         week: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await ensure_channel(interaction):
+            return
         try:
             guild_id = guild_id_from_interaction(interaction)
             channel_id = channel_id_from_interaction(interaction)
@@ -412,6 +414,8 @@ class Ingest(commands.Cog):
         week: str | None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await ensure_channel(interaction):
+            return
         try:
             guild_id = guild_id_from_interaction(interaction)
             channel_id = channel_id_from_interaction(interaction)
@@ -508,6 +512,8 @@ class Ingest(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
+        if not await ensure_channel(interaction):
+            return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
@@ -560,6 +566,8 @@ class Ingest(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await ensure_channel(interaction):
+            return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
@@ -636,6 +644,8 @@ class Ingest(commands.Cog):
         week: str | None = None,
         timeout_minutes: app_commands.Range[int, 1, 15] = 10,
     ) -> None:
+        if not await ensure_channel(interaction):
+            return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
@@ -833,6 +843,8 @@ class Ingest(commands.Cog):
         week: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        if not await ensure_channel(interaction):
+            return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         week_start = self._default_week(week)
