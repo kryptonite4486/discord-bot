@@ -10,9 +10,32 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.transforms import offset_copy  # noqa: E402
+
+WATERMARK_TEXT = "LastZ Assistant · Free — /premium to remove"
 
 
-def _fig_to_png(fig: plt.Figure) -> io.BytesIO:
+def _add_watermark(fig: plt.Figure) -> None:
+    """Small grey credit just below the bottom-right corner of the figure.
+
+    It sits outside the laid-out area, so it never covers axes, labels or
+    data; savefig's tight bounding box grows the image to fit it.
+    """
+    fig.text(
+        1.0,
+        0.0,
+        WATERMARK_TEXT,
+        transform=offset_copy(fig.transFigure, fig=fig, y=-4, units="points"),
+        ha="right",
+        va="top",
+        fontsize=8,
+        color="#6b7280",
+    )
+
+
+def _fig_to_png(fig: plt.Figure, watermark: bool = False) -> io.BytesIO:
+    if watermark:
+        _add_watermark(fig)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=140, bbox_inches="tight")
     plt.close(fig)
@@ -23,6 +46,7 @@ def _fig_to_png(fig: plt.Figure) -> io.BytesIO:
 def player_trend_chart(
     player: str,
     rows: list[dict[str, Any]],
+    watermark: bool = False,
 ) -> io.BytesIO | None:
     """Multi-metric trend chart for one player."""
     if not rows:
@@ -46,13 +70,14 @@ def player_trend_chart(
         ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
-    return _fig_to_png(fig)
+    return _fig_to_png(fig, watermark)
 
 
 def metric_trend_chart(
     metric: str,
     rows: list[dict[str, Any]],
     top_n: int = 8,
+    watermark: bool = False,
 ) -> io.BytesIO | None:
     """Overlay trend lines for top N players by latest value."""
     if not rows:
@@ -84,7 +109,7 @@ def metric_trend_chart(
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
-    return _fig_to_png(fig)
+    return _fig_to_png(fig, watermark)
 
 
 def leaderboard_bar_chart(
@@ -92,6 +117,7 @@ def leaderboard_bar_chart(
     week: str,
     rows: list[dict[str, Any]],
     top_n: int = 40,
+    watermark: bool = False,
 ) -> io.BytesIO | None:
     if not rows:
         return None
@@ -109,13 +135,14 @@ def leaderboard_bar_chart(
     ax.set_xlabel(metric)
     ax.grid(True, axis="x", alpha=0.3)
     fig.tight_layout()
-    return _fig_to_png(fig)
+    return _fig_to_png(fig, watermark)
 
 
 def growth_bar_chart(
     metric: str,
     rows: list[dict[str, Any]],
     top_n: int = 15,
+    watermark: bool = False,
 ) -> io.BytesIO | None:
     if not rows:
         return None
@@ -132,4 +159,4 @@ def growth_bar_chart(
     ax.axvline(0, color="#444", linewidth=0.8)
     ax.grid(True, axis="x", alpha=0.3)
     fig.tight_layout()
-    return _fig_to_png(fig)
+    return _fig_to_png(fig, watermark)

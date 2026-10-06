@@ -27,6 +27,7 @@ FEATURE_NAMES = {
     "advanced_reports": "`/report player`, `/report trend` and `/report growth`",
     "name_tools": "`/admin duplicates` and `/admin rename-player`",
     "multi_channel_reports": "reports covering more than one channel",
+    "clean_charts": "charts without the Free-plan watermark",
 }
 
 
@@ -48,7 +49,7 @@ MID = TierPolicy(
     "Alliance",
     1,
     ocr_images_per_week=250,
-    features=frozenset({"zip_batch", "advanced_reports", "name_tools"}),
+    features=frozenset({"zip_batch", "advanced_reports", "name_tools", "clean_charts"}),
 )
 FULL = TierPolicy(
     "full",
@@ -156,6 +157,16 @@ class Tiers:
             )
             return True, status
         return False, status
+
+    async def chart_watermark(self, guild_id: str) -> bool:
+        """Whether this server's PNG charts get the Free-plan watermark.
+
+        Never while tiers aren't enforced. If Free stops getting charts at
+        all (open decision 4), drop "clean_charts" and this method.
+        """
+        if not self.enforced:
+            return False
+        return not (await self.status(guild_id)).policy.allows("clean_charts")
 
     async def ocr_used_this_week(self, guild_id: str) -> int:
         since = quota_week_start().isoformat()

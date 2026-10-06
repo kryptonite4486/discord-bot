@@ -25,6 +25,7 @@ from bot.cogs.ops import (  # noqa: E402
 from bot.cogs.premium import format_premium  # noqa: E402
 from bot.cogs.reports import ReportScope, Reports  # noqa: E402
 from bot.db import Database  # noqa: E402
+from bot.reporting import charts  # noqa: E402
 from bot.utils.archive import ImageSource  # noqa: E402
 from bot.utils.tiers import (  # noqa: E402
     FREE,
@@ -323,6 +324,50 @@ class OpsFormattingTests(unittest.TestCase):
 
     def test_upgrade_message_names_plan(self) -> None:
         self.assertIn("**Command** plan", upgrade_message("multi_channel_reports", TierStatus(MID)))
+
+
+
+class ChartWatermarkTests(_DbCase):
+    async def test_watermark_only_for_free_when_enforced(self) -> None:
+        enforced = Tiers(self.db, enforced=True)
+        self.assertTrue(await enforced.chart_watermark("g1"))
+        await self.grant(guild="g2", tier="mid")
+        await self.grant(guild="g3", tier="full")
+        self.assertFalse(await enforced.chart_watermark("g2"))
+        self.assertFalse(await enforced.chart_watermark("g3"))
+        shadow = Tiers(self.db, enforced=False)
+        self.assertFalse(await shadow.chart_watermark("g1"))
+
+    async def test_report_cog_asks_tier_service(self) -> None:
+        self.assertFalse(await Reports(SimpleNamespace())._chart_watermark("g1"))  # type: ignore[arg-type]
+        cog = Reports(SimpleNamespace(tiers=Tiers(self.db, enforced=True)))  # type: ignore[arg-type]
+        self.assertTrue(await cog._chart_watermark("g1"))
+
+    def test_watermarked_charts_are_valid_pngs(self) -> None:
+        from PIL import Image
+
+        rows = [{"PlayerName": f"P{i}", "Value": 100 - i} for i in range(10)]
+        trend = [
+            {"PlayerName": "P1", "MetricType": "Kills", "WeekStart": f"2026-09-0{d}", "Value": d}
+            for d in range(1, 5)
+        ]
+        renders = {
+            "leaderboard": lambda wm: charts.leaderboard_bar_chart("Kills", "2026-10-04", rows, watermark=wm),
+            "growth": lambda wm: charts.growth_bar_chart(
+                "Kills", [dict(r, GrowthPct=r["Value"] - 95.0) for r in rows], watermark=wm
+            ),
+            "trend": lambda wm: charts.metric_trend_chart("Kills", trend, watermark=wm),
+            "player": lambda wm: charts.player_trend_chart("P1", trend, watermark=wm),
+        }
+        for name, render in renders.items():
+            with self.subTest(name):
+                plain = Image.open(render(False))
+                marked = Image.open(render(True))
+                marked.verify()
+                self.assertEqual(marked.format, "PNG")
+                # The watermark sits below the chart, so the image grows
+                # instead of the text covering the data.
+                self.assertGreater(marked.height, plain.height)
 
 
 if __name__ == "__main__":
