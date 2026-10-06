@@ -1,5 +1,11 @@
-"""/premium: this server's plan, its usage, and what each plan includes.
+"""/premium: this server's plan, its usage, and what each plan includes,
+with a button for server admins to start the free trial.
 /redeem: claim a gift code for this server.
+
+The free trial is 14 days of Command, once per server ever (TrialClaim in
+bot/db/database.py). It's a button on /premium rather than a command of its
+own: admins see it next to what the trial unlocks, it only appears while the
+server can start one, and /premium stays a single command.
 """
 
 from __future__ import annotations
@@ -13,7 +19,18 @@ from discord.ext import commands
 
 from bot.utils.guild import guild_id_from_interaction
 from bot.utils.gift_codes import AttemptLimiter, hash_code, normalize_code
-from bot.utils.tiers import FEATURE_NAMES, FREE, FULL, MID, TIERS, TierStatus, quota_week_start
+from bot.utils.tiers import (
+    FEATURE_NAMES,
+    FREE,
+    FULL,
+    MID,
+    TIERS,
+    TRIAL_DAYS,
+    TRIAL_TIER,
+    TierStatus,
+    quota_week_start,
+    status_from_entitlements,
+)
 
 log = logging.getLogger(__name__)
 CONTACT = "lastzassistant@gmail.com"
@@ -35,17 +52,28 @@ def _row(label: str, free, mid, full) -> str:
 
 
 def format_premium(
-    status: TierStatus, used: int, *, enforced: bool, channels: int | None = None
+    status: TierStatus,
+    used: int,
+    *,
+    enforced: bool,
+    channels: int | None = None,
+    trial_note: str | None = None,
+    now: datetime | None = None,
 ) -> str:
     policy = status.policy
     limit = policy.ocr_images_per_week
+    plan = f"**Plan: {status.describe()}**"
+    if status.source == "trial":
+        plan += f" ({status.time_left(now)})"
     lines = [
-        f"**Plan: {status.describe()}**",
+        plan,
         f"Screenshots this week: **{used} / {limit}** "
         f"(week started {quota_week_start().isoformat()}, resets Sunday UTC)",
     ]
     if channels is not None:
         lines.append(f"Channels with data: **{channels} / {_channel_cap(policy)}**")
+    if trial_note:
+        lines.append(trial_note)
     lines += [
         "",
         "**What each plan includes**",
@@ -107,6 +135,106 @@ def redeem_success_message(tier: str, ends_at: str | None, status: TierStatus) -
     return text + " Run `/premium` to see what it includes."
 
 
+def trial_available(status: TierStatus, claimed_at: str | None) -> bool:
+    """Whether /premium offers the trial. The database checks again on start."""
+    return claimed_at is None and status.policy.rank < TRIAL_TIER.rank
+
+
+def trial_note(
+    status: TierStatus, claimed_at: str | None, *, can_manage: bool, enforced: bool
+) -> str | None:
+    """The /premium line about the free trial, or None when there's nothing to say."""
+    if status.source == "trial":
+        return None  # the plan line already shows it
+    if claimed_at is not None:
+        return f"Free trial: used (started {claimed_at[:10]})."
+    if not trial_available(status, claimed_at):
+        return None  # already on that plan; the trial waits until it ends
+    if not can_manage:
+        return (
+            f"🎁 A server admin (Manage Server) can start a free {TRIAL_DAYS}-day "
+            f"**{TRIAL_TIER.name}** trial from `/premium`."
+        )
+    text = (
+        f"🎁 **Free trial:** this server can try **{TRIAL_TIER.name}** free for "
+        f"{TRIAL_DAYS} days, once. Press the button below to start it."
+    )
+    if not enforced:
+        text += (
+            " Plan limits aren't switched on yet, so a trial changes nothing for now; "
+            "you may prefer to keep it for later."
+        )
+    return text
+
+
+def trial_started_message(
+    ends_at: str, after: TierStatus, *, enforced: bool, report_channel: bool
+) -> str:
+    lines = [
+        f"🎉 Your free **{TRIAL_TIER.name}** trial has started. It runs until "
+        f"**{ends_at[:10]}** ({ends_at[11:16]} UTC); after that the server goes back "
+        f"to **{after.describe()}**. Nothing is deleted when it ends.",
+        "You'll get a reminder in the report channel 3 days before it ends."
+        if report_channel
+        else "Set a report channel with `/setup` to get a reminder 3 days before it ends.",
+    ]
+    if not enforced:
+        lines.append(
+            "_Plan limits aren't switched on yet, so everything already works on every "
+            "server. The trial is recorded, and it counts as this server's one trial._"
+        )
+    return "\n".join(lines)
+
+
+def trial_refused_message(outcome: str, details: dict) -> str:
+    if outcome == "claimed":
+        return (
+            f"This server has already used its free trial (started "
+            f"{details['claimed_at'][:10]}). Each server gets one. "
+            f"Run `/premium` to see the plans, or contact {CONTACT}."
+        )
+    row = details["entitlement"]
+    status = TierStatus(TIERS[row["Tier"]], row["Source"], row["EndsAt"])
+    if row["Source"] == "trial":
+        return f"This server's free trial is already running: **{status.describe()}** ({status.time_left()})."
+    return (
+        f"This server already has **{status.describe()}**, so a trial would add nothing. "
+        "The free trial stays available: you can start it from `/premium` if that plan ends."
+    )
+
+
+class TrialView(discord.ui.View):
+    """The "Start free trial" button under /premium (only shown to admins)."""
+
+    def __init__(self, cog: "Premium", *, timeout: float = 600.0) -> None:
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.message: discord.WebhookMessage | None = None
+
+    @discord.ui.button(
+        label=f"Start free {TRIAL_DAYS}-day {TRIAL_TIER.name} trial",
+        style=discord.ButtonStyle.success,
+        emoji="🎁",
+    )
+    async def start(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not getattr(interaction.permissions, "manage_guild", False):
+            await interaction.response.send_message(
+                "You need the Manage Server permission to start the trial.", ephemeral=True
+            )
+            return
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        text = await self.cog.start_trial(guild_id_from_interaction(interaction), interaction.user.id)
+        await interaction.followup.send(text, ephemeral=True)
+
+    async def on_timeout(self) -> None:
+        if self.message is not None:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+
 class Premium(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -121,11 +249,39 @@ class Premium(commands.Cog):
         status = await tiers.status(guild_id)
         used = await tiers.ocr_used_this_week(guild_id)
         channels = len(await self.bot.db.tracked_channels(guild_id))
-        await interaction.followup.send(
-            format_premium(status, used, enforced=tiers.enforced, channels=channels),
-            ephemeral=True,
+        claimed_at = await self.bot.db.trial_claimed_at(guild_id)
+        can_manage = bool(getattr(interaction.permissions, "manage_guild", False))
+        note = trial_note(status, claimed_at, can_manage=can_manage, enforced=tiers.enforced)
+        text = format_premium(
+            status, used, enforced=tiers.enforced, channels=channels, trial_note=note
         )
+        if can_manage and trial_available(status, claimed_at):
+            view = TrialView(self)
+            view.message = await interaction.followup.send(text, ephemeral=True, view=view, wait=True)
+        else:
+            await interaction.followup.send(text, ephemeral=True)
 
+    async def start_trial(self, guild_id: str, user_id: int) -> str:
+        """Start this server's free trial if it can have one; return the reply text."""
+        now = datetime.now(timezone.utc)
+        outcome, details = await self.bot.db.start_trial(
+            guild_id, str(user_id), tier=TRIAL_TIER.key, days=TRIAL_DAYS, now=now
+        )
+        if outcome != "ok":
+            log.info("Trial refused (%s) for guild %s by user %s", outcome, guild_id, user_id)
+            return trial_refused_message(outcome, details)
+        self.bot.tiers.invalidate(guild_id)
+        active = await self.bot.db.active_entitlements(guild_id, now.strftime("%Y-%m-%d %H:%M:%S"))
+        after = status_from_entitlements(
+            [r for r in active if r["Id"] != details["entitlement_id"]
+             and (r["EndsAt"] is None or r["EndsAt"] > details["ends_at"])]
+        )
+        log.warning("Guild %s started its free trial (entitlement #%d) by user %s, until %s",
+                    guild_id, details["entitlement_id"], user_id, details["ends_at"])
+        return trial_started_message(
+            details["ends_at"], after, enforced=self.bot.tiers.enforced,
+            report_channel=await self.bot.db.report_channel_id(guild_id) is not None,
+        )
 
     @app_commands.command(name="redeem", description="Redeem a gift code for this server (Manage Server)")
     @app_commands.describe(code="The gift code, e.g. ABCD-EFGH-JKMN-PQRS")

@@ -86,6 +86,10 @@ FULL = TierPolicy(
 TIERS = {t.key: t for t in (FREE, MID, FULL)}
 PAID_TIERS = (MID, FULL)
 
+# The free trial: once per server, started from /premium (bot/cogs/premium.py).
+TRIAL_TIER = FULL
+TRIAL_DAYS = 14
+
 SOURCE_NAMES = {
     "discord": "subscribed",
     "stripe": "subscribed",
@@ -171,6 +175,17 @@ class TierStatus:
         how = SOURCE_NAMES.get(self.source, self.source)
         until = f" until {self.ends_at[:10]}" if self.ends_at else ""
         return f"{self.policy.name} — {how}{until}"
+
+    def time_left(self, now: datetime | None = None) -> str | None:
+        """e.g. '13 days left'; None without an end date."""
+        if self.ends_at is None:
+            return None
+        ends = datetime.strptime(self.ends_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        left = ends - (now or datetime.now(timezone.utc))
+        if left < timedelta(days=1):
+            return "less than a day left" if left > timedelta(0) else "ended"
+        days = left.days + (left % timedelta(days=1) > timedelta(0))
+        return f"{days} days left"
 
 
 def status_from_entitlements(rows: list[dict]) -> TierStatus:

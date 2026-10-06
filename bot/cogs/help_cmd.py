@@ -74,7 +74,8 @@ Trivia (multiple choice; answer with the buttons)
 
 Help
   /help             Show this command list
-  /premium          This server's plan, weekly screenshot use, and what each plan includes
+  /premium          This server's plan, weekly screenshot use, and what each plan includes;
+                    admins (Manage Server) can start the free 14-day Command trial there
   /redeem           Redeem a gift code for this server (Manage Server)
 ```
 

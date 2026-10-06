@@ -58,7 +58,7 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 ### P2: product and growth
 15. `/premium` command showing the server's tier, usage this week, renewal date, and an upgrade button.
 16. ✅ *Done 2026-10-06: gated commands are read from their `requires_feature` checks; marks and a `/premium` footer show only while tiers are enforced.* `/help` marks locked commands with 🔒 and the tier that unlocks them.
-17. Trials: a 14-day Full trial once per guild, recorded as an entitlement with source `trial`.
+17. ✅ *Done 2026-10-06: a **Start free 14-day Command trial** button on `/premium`, shown to members with Manage Server while the server can start one (a button rather than `/premium trial`: the offer sits next to what it unlocks, and `/premium` stays one command). It creates a `GuildEntitlement` (`Source='trial'`, `Tier='full'`, `EndsAt` 14 days out) and an `EntitlementAudit` row (`trial`), and records the server in `TrialClaim (GuildId, ClaimedAt)`, all in one transaction; the table's key makes it race-safe. A server with an active Command plan (paid, gifted or code) is refused and told the trial stays available for later; a server on Alliance can start it. Neither `/data delete` nor the removal purge ever touched entitlements, but `TrialClaim` is a separate minimal record (server ID and date) that both explicitly keep, so the rule doesn't depend on entitlement rows surviving; the privacy policy says so. Revoking a trial doesn't make the server eligible again; only `/ops trial-reset` (audited) does. `/premium` shows "Command — trial until YYYY-MM-DD (N days left)"; `/ops show` lists trials and whether the trial was used; the server gets a heads-up in its report channel 3 days before the end listing what changes (no operator DM).* Trials: a 14-day Full trial once per guild, recorded as an entitlement with source `trial`.
 18. Abuse controls: per-user rate limits on ingest, and a per-owner cap on free servers to stop people farming free quota across many servers.
 19. Check the game publisher's terms on commercial companion tools that process game screenshots.
 20. Tax and business setup: Discord acts as merchant of record for Premium Apps. If you use Stripe directly you handle sales tax/VAT yourself (Stripe Tax can help).
@@ -140,6 +140,10 @@ CREATE TABLE EntitlementAudit (
   Id INTEGER PRIMARY KEY, At TEXT DEFAULT (datetime('now')),
   ActorId TEXT, Action TEXT, GuildId TEXT, Detail TEXT
 );
+
+-- Built 2026-10-06. One row per server that started its free trial; kept
+-- by /data delete and the removal purge. /ops trial-reset deletes it.
+CREATE TABLE TrialClaim (GuildId TEXT PRIMARY KEY, ClaimedAt TEXT NOT NULL);
 ```
 
 The **effective tier** is the highest tier among a guild's active entitlements (not revoked, `StartsAt <= now`, and `EndsAt` empty or in the future), falling back to free. Because of this, a gift and a paid subscription can overlap without conflict, and a lapsed subscription falls back to the gift automatically.
@@ -165,7 +169,8 @@ In the `/ops` group, which is synced only to `CONTROL_GUILD_ID` and checked agai
 | `/ops grant guild_id:<id> tier:full duration:<30d\|90d\|1y\|permanent> reason:<text> [notify:true]` | Inserts a gift entitlement. If `notify` is set, posts a thank-you embed in the server's configured report channel. |
 | `/ops revoke guild_id:<id> [entitlement_id]` | Sets `RevokedAt`. Never deletes the row. |
 | `/ops extend entitlement_id:<id> duration:<…>` | Moves `EndsAt` later. |
-| `/ops show guild_id:<id>` | Effective tier, all entitlements with their sources, usage this week, server name and member count. |
+| `/ops show guild_id:<id>` | Effective tier, all entitlements with their sources (trials included), whether the free trial was used, usage this week, server name and member count. |
+| `/ops trial-reset guild_id:<id> reason:<text>` | Lets a server start the free trial again (deletes its `TrialClaim`, audited). A running trial is left alone. |
 | `/ops list [source:gift] [expiring_within:14d]` | Lists active gifts, for review and renewal. |
 | `/ops code create tier:full duration:90d uses:1 [expires]` | Creates a redeemable code for giveaways and partners. Shown once; only its hash is stored (table `GiftCode`). |
 | `/ops code list` / `/ops code revoke code_id:<n>` | Lists codes with their uses; stops one being redeemed (optionally revoking plans already redeemed). |
@@ -174,7 +179,7 @@ In the `/ops` group, which is synced only to `CONTROL_GUILD_ID` and checked agai
 ### Rules
 - Every grant, revoke, extend and redeem writes to `EntitlementAudit`, recording who did it and why.
 - `guild_id` autocompletes from the servers the bot is in. Granting to a guild the bot isn't in is allowed (pre-provisioning) but shows a warning.
-- A daily task DMs the operator about gifts expiring within 7 days and posts a heads-up in the gifted server 3 days before expiry.
+- A daily task DMs the operator about gifts expiring within 7 days and posts a heads-up in the gifted server 3 days before expiry. Trials get the same 3-day heads-up in the server (saying what changes), but no operator DM.
 - Gifts show in `/premium` as "Full — gifted until 2027-01-01", or "Full — gifted" when permanent.
 - Your own alliance's server gets a permanent Full gift at migration time, so nothing changes for current users.
 
@@ -185,8 +190,8 @@ Why not Discord test entitlements? They are meant for testing, and creating them
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **0. Harden** (P0 items 1–7) | Owner-only `/ops`, `GuildSettings` + `/setup`, usage metering (counting only, no enforcement), fair queue, deletion, ToS/Privacy, `/ingest batch` via @mention, intent off | No server admin can affect another server; a week of real usage data per guild |
-| **1. Entitlements without billing** 🟡 *Built 2026-10-06, with `TIERS_ENFORCED` off by default (the operator turns it on later): tiers, feature checks, weekly OCR quota, `/premium`, `/ops grant/revoke/extend/show/list`; history windows (4 / 26 / all weeks via `TierPolicy.history_weeks`, one `min_week` filter in `database.py`, a footer naming hidden weeks); channel limit (1 / 3 / unlimited channels with data; over the limit after a downgrade, the most recently written channels stay writable and the rest are read-only, never deleted); chart watermark on Free (`clean_charts` flag on Alliance and Command; drop it if open decision 4 goes the other way); OCR priority lanes (weighted round-robin, Standard/Priority/Highest); gift codes (`/ops code create/list/revoke`, `/redeem`: hashed codes, use limits, expiry, one redemption per server, rate-limited); gift expiry reminders (operator DM at 7 days, server heads-up in the report channel at 3 days, sent once per end date); `/data export` (`export` flag on Alliance and Command, follows the history window; `/ops export` for the operator). Still to do: permanent Full gift for the operator's own server, friendly-alliance trial, then switching enforcement on.* | `GuildEntitlement`, tier policy, gates and quotas, `/premium`, gifting commands, permanent Full gift for existing servers | Gates covered by tests; your own server unaffected; 2–3 friendly alliances on gifted Full and Mid |
-| **2. Billing** | Discord SKUs and entitlement events, reconciliation on startup, downgrade/grace handling, trials | A test purchase upgrades, cancels and downgrades a server correctly |
+| **1. Entitlements without billing** 🟡 *Built 2026-10-06, with `TIERS_ENFORCED` off by default (the operator turns it on later): tiers, feature checks, weekly OCR quota, `/premium`, `/ops grant/revoke/extend/show/list`; history windows (4 / 26 / all weeks via `TierPolicy.history_weeks`, one `min_week` filter in `database.py`, a footer naming hidden weeks); channel limit (1 / 3 / unlimited channels with data; over the limit after a downgrade, the most recently written channels stay writable and the rest are read-only, never deleted); chart watermark on Free (`clean_charts` flag on Alliance and Command; drop it if open decision 4 goes the other way); OCR priority lanes (weighted round-robin, Standard/Priority/Highest); gift codes (`/ops code create/list/revoke`, `/redeem`: hashed codes, use limits, expiry, one redemption per server, rate-limited); gift expiry reminders (operator DM at 7 days, server heads-up in the report channel at 3 days, sent once per end date); `/data export` (`export` flag on Alliance and Command, follows the history window; `/ops export` for the operator); free 14-day Command trials, once per server (§2 item 17), pulled forward from Phase 2. Still to do: permanent Full gift for the operator's own server, friendly-alliance trial, then switching enforcement on.* | `GuildEntitlement`, tier policy, gates and quotas, `/premium`, gifting commands, permanent Full gift for existing servers | Gates covered by tests; your own server unaffected; 2–3 friendly alliances on gifted Full and Mid |
+| **2. Billing** | Discord SKUs and entitlement events, reconciliation on startup, downgrade/grace handling (trials done early, in Phase 1) | A test purchase upgrades, cancels and downgrades a server correctly |
 | **3. Launch** | Support server, App Directory listing, founding-alliance offer | First 10 paying servers |
 | **4. Full-tier extras** | Scheduled weekly report, role-based access, cross-server alliance view, cloud OCR fallback | Driven by what paying servers ask for |
 

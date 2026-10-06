@@ -1,13 +1,16 @@
-"""Reminders before gifted plans expire (docs/monetization-plan.md section 6).
+"""Reminders before gifted plans and free trials expire
+(docs/monetization-plan.md sections 2 and 6).
 
 Two stages, each sent once per entitlement and end date:
 
 - operator_7d: one DM to each operator in BOT_OWNER_IDS listing gifts
   (Source 'gift' or 'code') that end within 7 days, with the /ops extend
-  command for each.
-- server_3d: a heads-up in the gifted server's report channel 3 days before
-  the gift ends. Skipped while an active paid subscription outlasts the gift,
-  and when the server has no report channel set.
+  command for each. Trials aren't included: they end on their own.
+- server_3d: a heads-up in the server's report channel 3 days before a gift
+  or trial ends. A trial's heads-up spells out what changes when it ends.
+  Skipped while an active paid subscription outlasts it, for a trial when
+  another plan keeps the server on the same tier, and when the server has
+  no report channel set.
 
 What was sent is stored in EntitlementReminder, keyed on EndsAt, so restarts
 don't repeat a reminder and extending a gift re-arms both stages. A send
@@ -23,12 +26,13 @@ from typing import Any, Callable
 import discord
 
 from bot.utils.retention import fmt_time, utc_now
-from bot.utils.tiers import TIERS, status_from_entitlements
+from bot.utils.tiers import FEATURE_NAMES, TIERS, TierStatus, status_from_entitlements
 
 log = logging.getLogger(__name__)
 
 GIFT_SOURCES = frozenset({"gift", "code"})
 PAID_SOURCES = frozenset({"discord", "stripe"})
+TRIAL_SOURCE = "trial"
 
 STAGE_OPERATOR = "operator_7d"
 STAGE_SERVER = "server_3d"
@@ -43,10 +47,22 @@ def tier_name(tier: str) -> str:
     return TIERS[tier].name if tier in TIERS else tier
 
 
-def gifts_ending_within(rows: list[dict[str, Any]], now: datetime, window: timedelta) -> list[dict[str, Any]]:
-    """Active gifts and code redemptions ending within ``window`` of ``now``."""
+def gifts_ending_within(
+    rows: list[dict[str, Any]], now: datetime, window: timedelta, sources: frozenset[str] = GIFT_SOURCES
+) -> list[dict[str, Any]]:
+    """Active entitlements from ``sources`` (gifts and code redemptions by
+    default) ending within ``window`` of ``now``."""
     cutoff = fmt_time(now + window)
-    return [r for r in rows if r["Source"] in GIFT_SOURCES and r["EndsAt"] and r["EndsAt"] <= cutoff]
+    return [r for r in rows if r["Source"] in sources and r["EndsAt"] and r["EndsAt"] <= cutoff]
+
+
+def status_after(ending: dict[str, Any], active: list[dict[str, Any]]) -> TierStatus:
+    """The server's plan once ``ending`` ends, from the plans that outlast it."""
+    return status_from_entitlements([
+        r for r in active
+        if r["GuildId"] == ending["GuildId"] and r["Id"] != ending["Id"]
+        and (r["EndsAt"] is None or r["EndsAt"] > ending["EndsAt"])
+    ])
 
 
 def paid_outlasts(gift: dict[str, Any], active: list[dict[str, Any]]) -> bool:
@@ -79,13 +95,46 @@ def format_operator_summary(gifts: list[dict[str, Any]], names: dict[str, str]) 
     return messages
 
 
-def format_server_heads_up(gift: dict[str, Any], others: list[dict[str, Any]]) -> str:
-    after = status_from_entitlements(others)
+def format_server_heads_up(gift: dict[str, Any], after: TierStatus) -> str:
     return (
         f"⏳ Heads-up: this server's gifted **{tier_name(gift['Tier'])}** plan ends on "
         f"**{gift['EndsAt'][:10]}** ({gift['EndsAt'][11:16]} UTC). After that the server "
         f"will be on **{after.describe()}**. Run `/premium` to see what each plan includes."
     )
+
+
+def format_trial_heads_up(trial: dict[str, Any], after: TierStatus, *, enforced: bool) -> str:
+    """The trial's 3-day heads-up: when it ends and what the server loses."""
+    trial_plan = TIERS[trial["Tier"]]
+    plan = after.policy
+    lines = [
+        f"⏳ Heads-up: this server's free **{trial_plan.name}** trial ends on "
+        f"**{trial['EndsAt'][:10]}** ({trial['EndsAt'][11:16]} UTC). After that the server "
+        f"will be on **{after.describe()}**:",
+        f"• screenshots: {plan.ocr_images_per_week:,} a week instead of "
+        f"{trial_plan.ocr_images_per_week:,}",
+    ]
+    if plan.history_weeks != trial_plan.history_weeks:
+        lines.append(
+            f"• reports show the last {plan.history_weeks} weeks; older weeks are hidden, "
+            "not deleted"
+        )
+    if plan.max_channels != trial_plan.max_channels:
+        lines.append(
+            f"• new data in up to {plan.max_channels} channel(s); the others stay in "
+            "reports but take no new data"
+        )
+    lost = [FEATURE_NAMES[f] for f in FEATURE_NAMES if trial_plan.allows(f) and not plan.allows(f)]
+    if lost:
+        lines.append("• no longer included: " + "; ".join(lost))
+    lines.append(
+        "Nothing is deleted. Run `/premium` to see what each plan includes."
+    )
+    if not enforced:
+        lines.append(
+            "_Plan limits aren't switched on yet, so nothing changes for now._"
+        )
+    return "\n".join(lines)
 
 
 class GiftReminders:
@@ -135,25 +184,36 @@ class GiftReminders:
         return len(due)
 
     async def remind_servers(self, active: list[dict[str, Any]], now: datetime) -> int:
-        """Post heads-ups in servers whose gift ends within 3 days; return how many."""
+        """Post heads-ups in servers whose gift or trial ends within 3 days;
+        return how many."""
         sent = 0
-        for gift in await self._unsent(gifts_ending_within(active, now, SERVER_WINDOW), STAGE_SERVER):
+        ending = gifts_ending_within(active, now, SERVER_WINDOW, GIFT_SOURCES | {TRIAL_SOURCE})
+        enforced = bool(getattr(getattr(self.bot, "tiers", None), "enforced", False))
+        for gift in await self._unsent(ending, STAGE_SERVER):
             if paid_outlasts(gift, active):
                 continue
+            after = status_after(gift, active)
+            is_trial = gift["Source"] == TRIAL_SOURCE
+            if is_trial and after.policy.rank >= TIERS[gift["Tier"]].rank:
+                continue  # another plan keeps the server on the trial's tier
             channel = await self._report_channel(gift["GuildId"])
             if channel is None:
                 continue
-            others = [r for r in active if r["GuildId"] == gift["GuildId"] and r["Id"] != gift["Id"]]
+            text = (
+                format_trial_heads_up(gift, after, enforced=enforced) if is_trial
+                else format_server_heads_up(gift, after)
+            )
             try:
-                await channel.send(format_server_heads_up(gift, others))
+                await channel.send(text)
             except discord.HTTPException:
                 log.warning(
-                    "Couldn't post gift expiry heads-up for #%s in guild %s",
-                    gift["Id"], gift["GuildId"], exc_info=True,
+                    "Couldn't post %s expiry heads-up for #%s in guild %s",
+                    gift["Source"], gift["Id"], gift["GuildId"], exc_info=True,
                 )
                 continue
             await self.db.mark_reminder_sent(gift["Id"], STAGE_SERVER, gift["EndsAt"], sent_at=fmt_time(now))
-            log.info("Posted gift expiry heads-up for #%s in guild %s", gift["Id"], gift["GuildId"])
+            log.info("Posted %s expiry heads-up for #%s in guild %s",
+                     gift["Source"], gift["Id"], gift["GuildId"])
             sent += 1
         return sent
 
