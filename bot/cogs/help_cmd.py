@@ -73,6 +73,7 @@ Trivia (multiple choice; answer with the buttons)
 Help
   /help             Show this command list
   /premium          This server's plan, weekly screenshot use, and what each plan includes
+  /redeem           Redeem a gift code for this server (Manage Server)
 ```
 
 Week args accept `YYYY-MM-DD`, `current`, or `last` (normalized to Sunday).

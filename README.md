@@ -139,6 +139,9 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops extend <entitlement> <duration>` | Extend a gift, or make it permanent |
 | `/ops show <server>` | A server's plan, all its entitlements, this week's screenshots and recent changes |
 | `/ops list [expiring_within]` | Active entitlements across servers, soonest-ending first |
+| `/ops code create <tier> <duration> <uses> [expires] [note]` | Make a gift code that up to `uses` servers can redeem with `/redeem`; `expires` is the number of days it stays redeemable (default: until used up or revoked). The code is shown once: only its hash is stored |
+| `/ops code list [include_inactive]` | Codes by number and last four characters, with uses and status |
+| `/ops code revoke <code_id> <reason> [revoke_redeemed]` | Stop a code being redeemed; `revoke_redeemed` also revokes the plans servers already got from it |
 | `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
 
 ### Ingestion
@@ -176,8 +179,9 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 | Command | Description |
 |---------|-------------|
 | `/premium` | This server's plan, screenshots used this week, channels with data, and what each plan includes |
+| `/redeem <code>` | Redeem a gift code for this server (Manage Server) |
 
-Each server is on **Free**, **Alliance** or **Command**: the highest plan among its active entitlements (paid, gifted or trial, in `GuildEntitlement`). Plans differ in screenshots per week (25 / 250 / 1,000, Sunday to Sunday UTC), in how many weeks of history reports show (the last 4 / 26 weeks including this one / all), in how many channels can hold data (1 / 3 / any), and in these features:
+Each server is on **Free**, **Alliance** or **Command**: the highest plan among its active entitlements (paid, gifted, trial or from a gift code, in `GuildEntitlement`). Plans differ in screenshots per week (25 / 250 / 1,000, Sunday to Sunday UTC), in how many weeks of history reports show (the last 4 / 26 weeks including this one / all), in how many channels can hold data (1 / 3 / any), and in these features:
 
 | Feature | Plan needed |
 |---|---|
@@ -190,7 +194,9 @@ Older weeks are hidden from reports, never deleted: upgrading shows them again. 
 
 **Channel limit.** Each channel is its own dataset. `/add` and every `/ingest` command refuse to start data in a channel past the plan's limit, and the reply names the channels that can take data. Data is never deleted for being over the limit. A server with more channels than its plan allows (after a downgrade, or data added before limits were on) keeps reports for all of them, but only its most recently written channels take new data: the 1 (Free) or 3 (Alliance) whose latest row is newest. Upgrading makes every channel writable again. Rows without a channel (legacy leftovers) don't count.
 
-Everything else is free. **Limits are only enforced when `TIERS_ENFORCED=true`.** Until then nothing is blocked; the log records what would have been (`Tier check (not enforced)`, `OCR quota (not enforced)`, `Channel limit (not enforced)`), so you can gift plans with `/ops grant` and check the log before switching enforcement on. Every grant, revoke and extend is recorded in `EntitlementAudit`.
+Everything else is free. **Limits are only enforced when `TIERS_ENFORCED=true`.** Until then nothing is blocked; the log records what would have been (`Tier check (not enforced)`, `OCR quota (not enforced)`, `Channel limit (not enforced)`), so you can gift plans with `/ops grant` and check the log before switching enforcement on. Every grant, revoke and extend, and every gift code created, revoked or redeemed, is recorded in `EntitlementAudit`.
+
+**Gift codes.** Codes look like `ABCD-EFGH-JKMN-PQRS`: 16 random characters (80 bits) without I, L, O or U, and `/redeem` ignores case, spaces and dashes and reads O as 0 and I or L as 1. The `GiftCode` table keeps only a SHA-256 hash of each code (and its last four characters, for `/ops code list`). Each server can redeem a code once, and a redemption creates a `GuildEntitlement` with `Source='code'` and `ExternalId` set to the code's hash. Use counts and expiry are checked in the same transaction that records the redemption, so two servers redeeming the last use at once can't both get it. To stop codes being guessed, a user who makes 5 failed `/redeem` attempts within 15 minutes must wait before trying again.
 
 ### Planner
 | Command | Description |

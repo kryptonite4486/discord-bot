@@ -153,7 +153,8 @@ In the `/ops` group, which is synced only to `CONTROL_GUILD_ID` and checked agai
 | `/ops extend entitlement_id:<id> duration:<…>` | Moves `EndsAt` later. |
 | `/ops show guild_id:<id>` | Effective tier, all entitlements with their sources, usage this week, server name and member count. |
 | `/ops list [source:gift] [expiring_within:14d]` | Lists active gifts, for review and renewal. |
-| `/ops code create tier:full duration:90d uses:1 [expires]` | Creates a redeemable code for giveaways and partners. |
+| `/ops code create tier:full duration:90d uses:1 [expires]` | Creates a redeemable code for giveaways and partners. Shown once; only its hash is stored (table `GiftCode`). |
+| `/ops code list` / `/ops code revoke code_id:<n>` | Lists codes with their uses; stops one being redeemed (optionally revoking plans already redeemed). |
 | `/redeem code:<code>` *(server admin, public)* | Claims a code for the current server, creating an entitlement with `Source='code'`. |
 
 ### Rules
