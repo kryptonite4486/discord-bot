@@ -16,6 +16,7 @@ from bot.utils import setup_logging
 from bot.utils.channel_rules import enforce_channel_rules
 from bot.utils.command_sync import sync_commands
 from bot.utils.guild import reject_dm_interaction
+from bot.utils.health import HealthState, last_healthy_at
 from bot.utils.tiers import FeatureLocked, Tiers
 from bot.utils.storage import check_persistent_paths
 
@@ -25,6 +26,7 @@ COGS = (
     "bot.cogs.admin",
     "bot.cogs.data",
     "bot.cogs.gift_reminders",
+    "bot.cogs.health",
     "bot.cogs.help_cmd",
     "bot.cogs.ingest",
     "bot.cogs.ops",
@@ -63,6 +65,12 @@ class LastZAssistant(commands.Bot):
             legacy_guild_id=settings.legacy_guild_id,
         )
         self._commands_synced = False
+        # The health file's age says how long the bot was down before this
+        # start; it's reported as "back online" once connected.
+        self.health = HealthState(
+            heartbeat_url=getattr(settings, "heartbeat_url", None),
+            last_alive=last_healthy_at(),
+        )
 
         # Central guild-only gate so every slash command (and future cogs) inherit it.
         self.tree.interaction_check = self._guild_only_interaction
@@ -185,6 +193,12 @@ async def amain() -> None:
         f"none older than {settings.backup_max_age_days} days)"
         if backups_enabled
         else "disabled",
+    )
+
+    log.info(
+        "Offsite backup copy=%s heartbeat=%s",
+        settings.offsite_backup_dir if backups_enabled and settings.offsite_backup_dir else "off",
+        "on" if settings.heartbeat_url else "off",  # the URL itself is a secret
     )
 
     bot = LastZAssistant(settings, backups_enabled=backups_enabled)

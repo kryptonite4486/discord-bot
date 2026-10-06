@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +10,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from bot.utils.backup import create_backup, last_backup_time, prune_older_than
+from bot.utils.backup import (
+    create_backup,
+    last_backup_time,
+    prune_older_than,
+    sync_offsite,
+)
 from bot.utils.names import group_variants
 from bot.utils.parsing import chunk_message
 from bot.utils.tiers import FeatureLocked, requires_feature
@@ -93,20 +99,39 @@ class Admin(commands.Cog):
     @tasks.loop(hours=1)
     async def daily_backup(self) -> None:
         settings = self.bot.settings
+        health = self.bot.health
+        max_age = timedelta(days=settings.backup_max_age_days)
         last = last_backup_time(settings.backup_dir, "daily")
         if last is None or datetime.now(timezone.utc) - last >= BACKUP_INTERVAL:
             try:
                 await create_backup(
                     self.bot.db, settings.backup_dir, "daily", keep=settings.backup_keep
                 )
-            except Exception:
+            except Exception as exc:
                 log.exception("Scheduled database backup failed")
+                await health.backup_failed(exc)
+            else:
+                await health.backup_ok()
         try:
-            prune_older_than(
-                settings.backup_dir, timedelta(days=settings.backup_max_age_days)
-            )
+            prune_older_than(settings.backup_dir, max_age)
         except Exception:
             log.exception("Pruning old backups failed")
+        # Copies the newest daily backup if the offsite folder lacks it (so a
+        # failed copy is retried next hour) and prunes there by the same rules.
+        if settings.offsite_backup_dir is not None:
+            try:
+                await asyncio.to_thread(
+                    sync_offsite,
+                    settings.backup_dir,
+                    settings.offsite_backup_dir,
+                    keep=settings.backup_keep,
+                    max_age=max_age,
+                )
+            except Exception as exc:
+                log.exception("Offsite backup copy failed")
+                await health.offsite_failed(exc)
+            else:
+                await health.offsite_ok()
 
     # Hidden from members without Administrator; each command checks too, in
     # case a server widens access under Server Settings → Integrations.

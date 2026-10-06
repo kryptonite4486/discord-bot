@@ -83,15 +83,28 @@ def extract_metrics_from_image(
         raise ValueError(f"Unknown dataset kind: {kind!r}")
 
     # Lazy import avoids circular dependency with bot.ocr.vision
-    from bot.ocr.vision import extract_metrics_via_vision
+    from bot.ocr.vision import VisionOCRError, VisionReplyError, extract_metrics_via_vision
+    from bot.utils.health import record_ocr_call, short_reason
 
     log.info("Vision OCR model=%s kind=%s", ocr.model, kind)
-    return extract_metrics_via_vision(
-        image_path,
-        kind=kind,
-        base_url=ocr.base_url,
-        model=ocr.model,
-        api_key=ocr.api_key,
-        timeout=ocr.timeout,
-        source_name=source_name,
-    )
+    try:
+        result = extract_metrics_via_vision(
+            image_path,
+            kind=kind,
+            base_url=ocr.base_url,
+            model=ocr.model,
+            api_key=ocr.api_key,
+            timeout=ocr.timeout,
+            source_name=source_name,
+        )
+    except VisionReplyError:
+        # The server answered; the reply was unreadable. That's the image or
+        # the model, not an outage.
+        record_ocr_call(True)
+        raise
+    except VisionOCRError as exc:
+        # Unreachable, server error, auth or unknown model, after retries.
+        record_ocr_call(False, short_reason(exc))
+        raise
+    record_ocr_call(True)
+    return result

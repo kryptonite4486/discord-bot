@@ -40,10 +40,19 @@ Runtime data lives **outside the repo**, so deleting or re-cloning the code neve
 |---|---|---|
 | `BOT_DATA_DIR`, e.g. `~/DiscordBot/data` | `/app/data` | Live database `weekly.db` (+ `-wal`/`-shm` while running) |
 | `BOT_BACKUP_DIR`, e.g. `~/Documents/DiscordBot-dataBackup` | `/app/backups` | Backup copies; safe to sync (e.g. iCloud) |
+| `BOT_OFFSITE_BACKUP_DIR` (optional), e.g. an iCloud Drive, Dropbox or NAS folder | `/app/offsite-backups` | A second copy of each daily backup |
 
 `docker-compose.yml` refuses to start if either variable is unset. Inside the container, the bot also refuses to start if `/app/data` isn't a mounted folder (override with `ALLOW_UNMOUNTED_DATA=1`), and disables backups if `/app/backups` isn't mounted.
 
 **Backups.** The bot writes `weekly-YYYYMMDD-HHMMSS-daily.db` once a day (checked hourly, so restarts or a sleeping Mac delay it by at most an hour) and keeps the newest `BACKUP_KEEP` (default 14). `/ops backup` (operator only) writes a `-manual.db` copy on demand, as do the safety copies taken before renames and deletions; the newest 10 are kept. **No backup is kept longer than `BACKUP_MAX_AGE_DAYS` (default 30)**, checked hourly, except that the single newest backup is never removed, so a stretch without new backups can't leave none at all. Backups go through SQLite's `VACUUM INTO`, so they're consistent even while the bot is writing, and appear only once complete. Timestamps are UTC.
+
+**Offsite copy (optional).** After each daily backup the bot can copy it to a second folder that leaves the machine: iCloud Drive, Dropbox, or a mounted NAS share. No cloud SDK or credentials are involved; the sync client or the mount does the moving. The same retention applies there (newest `BACKUP_KEEP` daily copies, nothing older than `BACKUP_MAX_AGE_DAYS`, checked hourly), so data deleted from the bot is gone from the offsite copies within the same 30 days. The copy is retried every hour until it succeeds, and a failure DMs the operator (see [Monitoring](#monitoring)). With Docker:
+
+1. Create the folder on the Mac, e.g. `mkdir -p ~/Library/Mobile\ Documents/com~apple~CloudDocs/DiscordBot-offsite` (iCloud Drive) or `~/Dropbox/DiscordBot-offsite`. For a NAS, mount the share in Finder first. Docker Desktop must be allowed to share the location (Settings → Resources → File sharing; `/Users` is shared by default).
+2. Set `BOT_OFFSITE_BACKUP_DIR=/Users/you/...` in `.env` (absolute path; quote it if it has spaces).
+3. Uncomment the `BOT_OFFSITE_BACKUP_DIR` volume line in `docker-compose.yml`, then `docker compose up -d`.
+
+The folder must already exist: if the drive isn't mounted the bot reports an error rather than quietly writing the "offsite" copy to the local disk. Without Docker, set `OFFSITE_BACKUP_DIR` to the folder instead.
 
 **Don't open or copy the live `weekly.db` from the Mac while the bot is running.** The database uses WAL mode, whose locking doesn't work across Docker Desktop's VM boundary, and a plain copy can miss recent writes. Open a backup instead, or stop the bot first.
 
@@ -56,6 +65,31 @@ mkdir -p ../replaced && mv weekly.db* ../replaced/   # keep the current files, j
 cp ~/Documents/DiscordBot-dataBackup/weekly-YYYYMMDD-HHMMSS-daily.db weekly.db
 cd - && docker compose up -d
 ```
+
+## Monitoring
+
+The bot runs on a home Mac, so it watches itself and tells the operator when something breaks. Nothing here sends screenshots, OCR replies or player data anywhere: alerts name the failing part and a short reason (an HTTP status or error type).
+
+**Outside uptime check (heartbeat).** Set `HEARTBEAT_URL` to a dead-man's-switch ping URL and the bot GETs it every 5 minutes, but only while it's connected to Discord and its database answers. If the Mac sleeps or goes offline, Docker stops, or the bot crashes or loses Discord, the pings stop and the service alerts you (email, phone push, Slack, etc.). Empty means off. To set up a free check on [healthchecks.io](https://healthchecks.io) (the free plan covers this; Better Stack and similar services work the same way):
+
+1. Sign up and create a project, then **Add Check**.
+2. Set **Period** to 5 minutes and **Grace** to 10 minutes (a sleeping Mac or a short Wi-Fi drop within the grace time won't alert).
+3. Copy the check's ping URL (`https://hc-ping.com/<uuid>`) into `.env` as `HEARTBEAT_URL=...`, then `docker compose up -d`.
+4. Under **Integrations**, choose how you want to be told (email is on by default).
+
+The ping URL is a secret: anyone with it can keep your check green. The bot never logs or shows it.
+
+**Docker healthcheck.** Every minute that the bot is connected and its database works, it touches `/tmp/lastz-assistant.healthy` in the container; `docker-compose.yml`'s healthcheck fails once that file is 3 minutes old, so `docker compose ps` shows `(unhealthy)`. It only reports; Compose doesn't restart unhealthy containers (`restart: unless-stopped` already restarts a crashed bot).
+
+**Alert DMs.** Users in `BOT_OWNER_IDS` get a DM when:
+
+- the OCR server fails 3 checks or OCR calls in a row (the bot probes `GET {OCR_VISION_BASE_URL}/models` every 2 minutes and checks `OCR_VISION_MODEL` is listed; real OCR calls that fail after their retries count too, unreadable model replies don't), and again when it recovers;
+- the daily backup or the offsite copy fails, and again when it works;
+- the bot comes back after being away at least 10 minutes: disconnected from Discord, the Mac asleep, or the container down (measured from the health file at startup).
+
+Each problem alerts once and sends one "recovered" message. Messages of the same kind are at least 30 minutes apart, so a flapping server can't spam: if it fails again within 30 minutes of the last message, the incident is recorded quietly and the alert goes out when the 30 minutes are up, only if it's still failing. A DM that can't be delivered isn't retried; `/ops health` still shows the incident.
+
+**`/ops health`** (operator only, in the control server) shows uptime, Discord latency, the OCR server's status and last error, the last daily backup and offsite copy, the heartbeat's last ping, and open incidents.
 
 ## Local run (without Docker)
 
@@ -133,6 +167,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops reload <cog>` | Reload a cog |
 | `/ops sync` | Register commands globally, `/ops` in the control server, and remove duplicate per-server copies everywhere |
 | `/ops backup` | Write a database backup now |
+| `/ops health` | Uptime, Discord latency, OCR server status and last error, last daily backup and offsite copy, heartbeat, open incidents. See [Monitoring](#monitoring) |
 | `/ops queue` | Live OCR queue: requests running and waiting per server, and how long the oldest has waited |
 | `/ops purges` | Servers that removed the bot and when their data will be deleted |
 | `/ops export <server> [format]` | Every week and channel of a server's metrics as CSV or JSON, whatever its plan, for deletion and access requests. Works after the bot has been removed, until the data is purged |
@@ -348,7 +383,7 @@ The suite includes `tests/test_vision_samples.py`, which runs every screenshot i
 bot/
   main.py           # entrypoint
   config.py         # env settings
-  cogs/             # admin, help, ingest, ops, planner, reports, trivia
+  cogs/             # admin, health, help, ingest, ops, planner, reports, trivia
   db/               # SQLite helpers
   ocr/              # Vision-model OCR (oMLX) and response parsing
   reporting/        # markdown + matplotlib

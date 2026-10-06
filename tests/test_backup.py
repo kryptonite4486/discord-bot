@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from bot.db import Database  # noqa: E402
 from bot.utils import storage  # noqa: E402
+from bot.utils.health import HealthState  # noqa: E402
 from bot.utils.backup import (  # noqa: E402
     MANUAL_KEEP,
     create_backup,
@@ -129,8 +130,11 @@ class BackupTests(unittest.IsolatedAsyncioTestCase):
             "weekly-20200101-000000-manual.db",
             f"weekly-{recent:%Y%m%d-%H%M%S}-daily.db",
         )
-        settings = SimpleNamespace(backup_dir=self.backup_dir, backup_keep=14, backup_max_age_days=30)
-        cog = Admin(SimpleNamespace(settings=settings, db=self.db))  # type: ignore[arg-type]
+        settings = SimpleNamespace(
+            backup_dir=self.backup_dir, backup_keep=14, backup_max_age_days=30, offsite_backup_dir=None
+        )
+        bot = SimpleNamespace(settings=settings, db=self.db, health=HealthState())
+        cog = Admin(bot)  # type: ignore[arg-type]
         await cog.daily_backup.coro(cog)
         # No new daily backup (the last one is 2 hours old); the old manual one is gone.
         self.assertEqual(self._names(), [f"weekly-{recent:%Y%m%d-%H%M%S}-daily.db"])

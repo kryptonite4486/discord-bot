@@ -60,6 +60,13 @@ def load_vision_env() -> tuple[str, str, str, float]:
     return base_url, model, api_key, timeout
 
 
+def _heartbeat_url() -> str | None:
+    raw = os.getenv("HEARTBEAT_URL", "").strip()
+    if raw and not raw.startswith(("https://", "http://")):
+        raise RuntimeError("HEARTBEAT_URL must start with https:// (or leave it empty)")
+    return raw or None
+
+
 DEFAULT_PLANNER_URL = "https://lastz-territory-planner.pages.dev"
 
 
@@ -88,6 +95,10 @@ class Settings:
     planner_url: str = DEFAULT_PLANNER_URL
     # None: the question bank bundled with the bot.
     trivia_questions_path: Path | None = None
+    # Dead-man's-switch URL (healthchecks.io, Better Stack) pinged while healthy.
+    heartbeat_url: str | None = None
+    # Second folder that gets a copy of each daily backup (iCloud, Dropbox, NAS).
+    offsite_backup_dir: Path | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -140,6 +151,12 @@ class Settings:
             trivia_questions_path=(
                 Path(os.environ["TRIVIA_QUESTIONS_PATH"])
                 if os.getenv("TRIVIA_QUESTIONS_PATH", "").strip()
+                else None
+            ),
+            heartbeat_url=_heartbeat_url(),
+            offsite_backup_dir=(
+                Path(os.environ["OFFSITE_BACKUP_DIR"].strip())
+                if os.getenv("OFFSITE_BACKUP_DIR", "").strip()
                 else None
             ),
         )

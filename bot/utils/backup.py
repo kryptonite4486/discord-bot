@@ -4,6 +4,10 @@ Backups use ``VACUUM INTO``, which writes a consistent, compacted copy through
 SQLite itself (a plain file copy of a WAL-mode database can miss recent writes
 or be torn mid-write). Each backup is written to a temporary name and renamed
 into place, so sync tools such as iCloud never pick up a partial file.
+
+An optional second folder (``OFFSITE_BACKUP_DIR``: a mounted iCloud Drive,
+Dropbox or NAS folder) gets a copy of each daily backup and the same
+retention, so deleted data leaves the offsite copies on the same schedule.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -111,3 +116,41 @@ async def create_backup(
     log.info("Database backup written: %s (%d bytes)", final, final.stat().st_size)
     prune(backup_dir, kind, keep if kind == "daily" else MANUAL_KEEP)
     return final
+
+
+def sync_offsite(
+    backup_dir: Path,
+    offsite_dir: Path,
+    *,
+    keep: int,
+    max_age: timedelta,
+    now: datetime | None = None,
+) -> Path | None:
+    """Copy the newest daily backup to ``offsite_dir`` and apply retention there.
+
+    Returns the new copy, or None if the offsite folder already had it. Run
+    hourly, so a copy that failed (folder unmounted, disk full) is retried.
+    The folder must already exist: creating it would quietly write the
+    "offsite" copy to the local disk when a network or cloud drive isn't
+    mounted.
+    """
+    if not offsite_dir.is_dir():
+        raise FileNotFoundError(
+            f"offsite backup folder {offsite_dir} doesn't exist (not mounted?)"
+        )
+    copied = None
+    dailies = list_backups(backup_dir, "daily")
+    if dailies and not (offsite_dir / dailies[-1].name).exists():
+        source = dailies[-1]
+        final = offsite_dir / source.name
+        tmp = offsite_dir / f".{source.name}.partial"
+        try:
+            shutil.copyfile(source, tmp)
+            os.replace(tmp, final)
+        finally:
+            tmp.unlink(missing_ok=True)
+        log.info("Offsite backup copy written: %s", final)
+        copied = final
+    prune(offsite_dir, "daily", keep)
+    prune_older_than(offsite_dir, max_age, now=now)
+    return copied

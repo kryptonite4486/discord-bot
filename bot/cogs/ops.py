@@ -1,4 +1,4 @@
-"""Operator-only commands: reload, sync, backup, queue, purges, usage,
+"""Operator-only commands: reload, sync, backup, health, queue, purges, usage,
 capacity, export, and gifting plans (grant, revoke, extend, show, list, gift
 codes, and resetting a server's free trial).
 
@@ -10,6 +10,7 @@ is checked again for both the server and the user.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import io
 import logging
@@ -22,7 +23,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.db.database import USAGE_KINDS
-from bot.utils.backup import create_backup
+from bot.utils.backup import create_backup, last_backup_time
 from bot.utils.capacity import (
     WEEKDAYS,
     CapacityEstimate,
@@ -36,6 +37,7 @@ from bot.utils.command_sync import sync_commands, sync_control_guild
 from bot.utils.export import build_export, upload_limit
 from bot.utils.fair_queue import LEVEL_NAMES, GuildQueueState
 from bot.utils.gift_codes import code_hint, generate_code, hash_code, normalize_code
+from bot.utils.health import format_health_report, utc_now
 from bot.utils.report_channel import ReportChannelUnavailable, send_to_report_channel
 from bot.utils.retention import RemovedServer, removed_servers
 from bot.utils.tiers import FREE, FULL, MID, TIERS, status_from_entitlements
@@ -638,6 +640,45 @@ class Ops(commands.Cog):
             ephemeral=True,
         )
 
+    @ops.command(
+        name="health",
+        description="Uptime, Discord latency, OCR server, backups, heartbeat and open incidents",
+    )
+    async def health(self, interaction: discord.Interaction) -> None:
+        # interaction_check already ran; repeated because this shows hosting details.
+        if not is_operator(self.bot, interaction.user.id):
+            await interaction.response.send_message(NOT_OPERATOR_MESSAGE, ephemeral=True)
+            return
+        s = self.bot.settings
+        backups = getattr(self.bot, "backups_enabled", False)
+        offsite = backups and s.offsite_backup_dir is not None
+
+        def read_backup_times():
+            # Folder listings; the offsite one may be a slow network drive.
+            last = last_backup_time(s.backup_dir, "daily") if backups else None
+            last_off = None
+            if offsite:
+                try:
+                    last_off = last_backup_time(s.offsite_backup_dir, "daily")
+                except OSError:
+                    log.warning("Couldn't list the offsite backup folder", exc_info=True)
+            return last, last_off
+
+        await interaction.response.defer(ephemeral=True)
+        last_backup, last_offsite = await asyncio.to_thread(read_backup_times)
+        await interaction.followup.send(
+            format_health_report(
+                self.bot.health,
+                now=utc_now(),
+                latency=self.bot.latency,
+                backups_enabled=backups,
+                last_backup=last_backup,
+                offsite_enabled=offsite,
+                last_offsite=last_offsite,
+            ),
+            ephemeral=True,
+        )
+
     @ops.command(name="queue", description="Live OCR queue: running and waiting requests per server")
     async def queue(self, interaction: discord.Interaction) -> None:
         ingest = self.bot.get_cog("Ingest")
@@ -1119,7 +1160,7 @@ async def setup(bot: commands.Bot) -> None:
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup, queue, purges, usage, capacity, export) are disabled"
+            "(/ops reload, sync, backup, health, queue, purges, usage, capacity, export) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

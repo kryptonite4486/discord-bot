@@ -18,12 +18,27 @@ services:
       # without them rather than falling back to a folder in the repo.
       - ${BOT_DATA_DIR:?Set BOT_DATA_DIR in .env (host folder for weekly.db)}:/app/data
       - ${BOT_BACKUP_DIR:?Set BOT_BACKUP_DIR in .env (host folder for backups)}:/app/backups
+      # Optional offsite copy of each daily backup (iCloud Drive, Dropbox, NAS).
+      # Set BOT_OFFSITE_BACKUP_DIR in .env and uncomment this line:
+      # - ${BOT_OFFSITE_BACKUP_DIR}:/app/offsite-backups
       # Live-mount app code so host edits apply without a full image rebuild.
       # /admin reload picks up cog changes; restart for main/config changes.
       - ./bot:/app/bot
     environment:
       - DATABASE_PATH=/app/data/weekly.db
       - BACKUP_DIR=/app/backups
+      # Empty (copy off) unless BOT_OFFSITE_BACKUP_DIR is set.
+      - OFFSITE_BACKUP_DIR=${BOT_OFFSITE_BACKUP_DIR:+/app/offsite-backups}
+    # The bot touches this file every minute while it's connected to Discord
+    # and its database answers; `docker compose ps` shows "unhealthy" once it
+    # goes stale. (Restarting doesn't fix a sleeping Mac or a Discord outage,
+    # so this only reports; see HEARTBEAT_URL for an outside alert.)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; p='/tmp/lastz-assistant.healthy'; sys.exit(0 if os.path.exists(p) and time.time() - os.path.getmtime(p) < 180 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     # Reach oMLX / other services on the Mac host (Docker Desktop provides
     # host.docker.internal; host-gateway covers Linux Compose as well).
     extra_hosts:
