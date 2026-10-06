@@ -22,6 +22,7 @@ from bot.cogs.data import Data  # noqa: E402
 from bot.cogs.ops import NOT_OPERATOR_MESSAGE, Ops  # noqa: E402
 from bot.db import Database  # noqa: E402
 from bot.utils.export import fit_upload  # noqa: E402
+from bot.utils.guild import channel_display_name  # noqa: E402
 from bot.utils.tiers import FREE, FULL, MID, Tiers, ensure_feature, quota_week_start  # noqa: E402
 
 G, OTHER = "123456789012345678", "223456789012345678"
@@ -269,6 +270,18 @@ class GateTests(_DbCase):
         )
         inter = _Interaction(client=SimpleNamespace(tiers=Tiers(self.db, enforced=True)))
         self.assertTrue(await ensure_feature(inter, "export"))
+
+
+class ChannelNameTests(unittest.TestCase):
+    def test_thread_names_resolve(self) -> None:
+        # Data added in a thread: get_channel misses threads, get_channel_or_thread finds them.
+        thread = SimpleNamespace(name="e2e-thread")
+        guild = SimpleNamespace(
+            get_channel=lambda cid: None,
+            get_channel_or_thread=lambda cid: thread if cid == 99 else None,
+        )
+        self.assertEqual(channel_display_name(guild, "99"), "#e2e-thread")
+        self.assertEqual(channel_display_name(guild, "1234"), "#unknown-1234")
 
 
 class OpsExportTests(_DbCase):

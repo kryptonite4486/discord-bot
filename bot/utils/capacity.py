@@ -26,6 +26,10 @@ from datetime import date, timedelta
 
 SECONDS_PER_DAY = 86_400
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# Below these, the measured seconds per image and weekly pattern are too
+# noisy to plan quotas on: one slow image or one busy day dominates.
+MIN_IMAGES_FOR_ESTIMATE = 100
+MIN_ACTIVE_DAYS_FOR_ESTIMATE = 7
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ class UsageStats:
     busiest_days: list[tuple[str, float, float | None]]
     # Worst daily average wait: (day, seconds), or None with no batches.
     peak_wait: tuple[str, float] | None
+    # Days in the window with at least one image.
+    active_days: int = 0
 
     @property
     def seconds_per_image(self) -> float | None:
@@ -121,7 +127,37 @@ def summarize_usage(
         weekday_avg=weekday_avg,
         busiest_days=busiest,
         peak_wait=peak_wait,
+        active_days=sum(1 for u in daily.values() if u.get("ocr_images", 0.0) > 0),
     )
+
+
+def sample_warning(stats: UsageStats, *, seconds_measured: bool, share_measured: bool) -> str | None:
+    """Why a measured estimate can't be trusted yet, or None if the sample is big enough.
+
+    Only measured inputs count: a given seconds_per_image or an assumed peak
+    share doesn't depend on how much usage has been recorded.
+    """
+    if not (seconds_measured or share_measured):
+        return None
+    if stats.images >= MIN_IMAGES_FOR_ESTIMATE and stats.active_days >= MIN_ACTIVE_DAYS_FOR_ESTIMATE:
+        return None
+    return (
+        f"Too little data to plan on: {int(stats.images)} image(s) on "
+        f"{stats.active_days} day(s). The measured figures need at least "
+        f"{MIN_IMAGES_FOR_ESTIMATE} images over {MIN_ACTIVE_DAYS_FOR_ESTIMATE}+ days of real use; "
+        "until then treat the numbers below as illustrative."
+    )
+
+
+def format_weekday_avg(n: float) -> str:
+    """An average image count, with enough decimals that small values aren't shown as 0."""
+    if n == 0:
+        return "0"
+    if n >= 10:
+        return f"{n:.0f}"
+    if n >= 1:
+        return f"{n:.1f}"
+    return f"{n:.2f}"
 
 
 @dataclass(frozen=True)

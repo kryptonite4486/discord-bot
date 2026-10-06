@@ -49,8 +49,10 @@ def channel_display_name(
     if names and cid in names:
         return names[cid]
     if guild is not None:
+        # get_channel doesn't find threads, which also hold data.
+        lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
         try:
-            ch = guild.get_channel(int(cid))
+            ch = lookup(int(cid))
         except (TypeError, ValueError):
             ch = None
         if ch is not None:

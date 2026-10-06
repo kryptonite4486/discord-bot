@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -16,7 +16,12 @@ if str(ROOT) not in sys.path:
 
 from bot.cogs.ops import MAX_CAPACITY_ROWS, Ops, format_capacity_report  # noqa: E402
 from bot.db import Database  # noqa: E402
-from bot.utils.capacity import estimate_capacity, summarize_usage  # noqa: E402
+from bot.utils.capacity import (  # noqa: E402
+    estimate_capacity,
+    format_weekday_avg,
+    sample_warning,
+    summarize_usage,
+)
 
 QUOTAS = {"Free": 25, "Alliance": 250, "Command": 1000}
 
@@ -180,6 +185,40 @@ class FormatCapacityReportTests(unittest.TestCase):
         self.assertIn("10.0s/image given", text)
         self.assertIn("peak day 100% of the week assumed", text)
         self.assertNotIn("Busiest day so far", text)
+        self.assertNotIn("Too little data", text)
+
+    def test_small_sample_warns(self) -> None:
+        # The live case: 2 images on one day extrapolated to dozens of servers.
+        daily = {"2026-10-06": _day(2, ocr_batches=2, ocr_seconds=2.6)}
+        text = self._report(daily=daily, by_guild={"1": {"ocr_images": 2, "ocr_seconds": 2.6}})
+        self.assertIn("⚠️ Too little data to plan on: 2 image(s) on 1 day(s)", text)
+        self.assertLess(text.index("Too little data"), text.index("**Estimate**"))
+
+    def test_small_weekday_averages_not_shown_as_zero(self) -> None:
+        # One image over the window's two Tuesdays averages 0.5, not "0".
+        daily = {"2026-10-06": _day(1, ocr_batches=1, ocr_seconds=1.3)}
+        text = self._report(daily=daily, by_guild={"1": {"ocr_images": 1, "ocr_seconds": 1.3}})
+        self.assertIn("Mon 0  Tue 0.50  Wed 0", text)
+
+
+class SampleHelpersTests(unittest.TestCase):
+    def test_format_weekday_avg(self) -> None:
+        self.assertEqual(
+            [format_weekday_avg(n) for n in (0, 0.07, 0.5, 2.25, 12.4)],
+            ["0", "0.07", "0.50", "2.2", "12"],
+        )
+
+    def test_sample_warning_thresholds(self) -> None:
+        small = summarize_usage({"2026-09-28": _day(500)}, MON, SUN2)
+        self.assertIn("1 day(s)", sample_warning(small, seconds_measured=True, share_measured=True))
+        week = {(MON + timedelta(days=i)).isoformat(): _day(20) for i in range(7)}
+        enough = summarize_usage(week, MON, SUN2)
+        self.assertEqual(enough.active_days, 7)
+        self.assertIsNone(sample_warning(enough, seconds_measured=True, share_measured=True))
+        few_images = summarize_usage({k: _day(1) for k in week}, MON, SUN2)
+        self.assertIsNotNone(sample_warning(few_images, seconds_measured=True, share_measured=False))
+        # Nothing measured: the sample size doesn't matter.
+        self.assertIsNone(sample_warning(small, seconds_measured=False, share_measured=False))
 
 
 class CapacityCommandTests(unittest.IsolatedAsyncioTestCase):

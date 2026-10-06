@@ -28,6 +28,8 @@ from bot.utils.capacity import (
     CapacityEstimate,
     UsageStats,
     estimate_capacity,
+    format_weekday_avg,
+    sample_warning,
     summarize_usage,
 )
 from bot.utils.command_sync import sync_commands, sync_control_guild
@@ -251,7 +253,7 @@ def format_capacity_report(
             ),
             "",
             "Average images per weekday:",
-            "  ".join(f"{d} {n:.0f}" for d, n in zip(WEEKDAYS, stats.weekday_avg)),
+            "  ".join(f"{d} {format_weekday_avg(n)}" for d, n in zip(WEEKDAYS, stats.weekday_avg)),
             "```",
         ]
         if stats.peak_day_share is not None:
@@ -278,8 +280,15 @@ def format_capacity_report(
         return "\n".join(lines)
 
     e = estimate
+    lines.append("")
+    warning = sample_warning(
+        stats,
+        seconds_measured=seconds_source == "measured",
+        share_measured=share_source == "measured",
+    )
+    if warning:
+        lines.append(f"⚠️ {warning}")
     lines += [
-        "",
         f"**Estimate** ({e.seconds_per_image:.1f}s/image {seconds_source}, "
         f"{e.slots} slot(s), peak day {e.peak_day_share:.0%} of the week {share_source}, "
         f"{e.utilization:.0%} utilization)",
