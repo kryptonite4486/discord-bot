@@ -352,6 +352,11 @@ class Reports(commands.Cog):
         note = hidden_weeks_note(hidden, status)
         return f"\n\n{note}" if note else ""
 
+    async def _chart_watermark(self, guild_id: str) -> bool:
+        """Free-plan watermark on PNG charts (only while tiers are enforced)."""
+        tiers = getattr(self.bot, "tiers", None)
+        return tiers is not None and await tiers.chart_watermark(guild_id)
+
     def _enrich_channel_names(
         self,
         interaction: discord.Interaction,
@@ -472,7 +477,9 @@ class Reports(commands.Cog):
         )
         text += await self._hidden_note(rs, window, player_name=name)
         png = (
-            charts.player_trend_chart(name, rows)
+            charts.player_trend_chart(
+                name, rows, watermark=await self._chart_watermark(rs.guild_id)
+            )
             if chart and rows and not rs.show_channel
             else None
         )
@@ -580,7 +587,13 @@ class Reports(commands.Cog):
             channel_names=names,
         )
         text += await self._hidden_note(rs, window, metric_type=metric_type, recent=weeks)
-        png = charts.metric_trend_chart(metric_type, rows) if not rs.show_channel else None
+        png = (
+            charts.metric_trend_chart(
+                metric_type, rows, watermark=await self._chart_watermark(rs.guild_id)
+            )
+            if not rs.show_channel
+            else None
+        )
         file = discord.File(png, filename=f"{metric_type}_trend.png") if png else None
         await self._send_text(interaction, text, file=file)
 
@@ -654,7 +667,10 @@ class Reports(commands.Cog):
             png = None
             if not rs.show_channel:
                 png = await asyncio.to_thread(
-                    charts.growth_bar_chart, metric_type, rows
+                    charts.growth_bar_chart,
+                    metric_type,
+                    rows,
+                    watermark=await self._chart_watermark(rs.guild_id),
                 )
             chart = (
                 discord.File(png, filename=f"{metric_type}_growth.png")
@@ -751,7 +767,11 @@ class Reports(commands.Cog):
         png = None
         if not rs.show_channel:
             png = charts.leaderboard_bar_chart(
-                metric_type, str(resolved_week), rows, top_n=chart_cap
+                metric_type,
+                str(resolved_week),
+                rows,
+                top_n=chart_cap,
+                watermark=await self._chart_watermark(rs.guild_id),
             )
             if png and len(rows) > chart_cap:
                 text += f"\n\n(Chart shows top {chart_cap} of {len(rows)} players.)"

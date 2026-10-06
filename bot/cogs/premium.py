@@ -74,6 +74,7 @@ FEATURE_LABELS = {
     "advanced_reports": "Player, trend and growth reports",
     "name_tools": "Duplicate-name tools",
     "multi_channel_reports": "Reports across several channels",
+    "clean_charts": "Charts without watermark",
 }
 assert set(FEATURE_LABELS) == set(FEATURE_NAMES), "label every gated feature"
 
