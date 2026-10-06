@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.utils.help_locks import help_with_locks
 from bot.utils.parsing import chunk_message
 
 HELP_TEXT = """\
@@ -97,7 +98,8 @@ class HelpCmd(commands.Cog):
     @app_commands.command(name="help", description="List bot slash commands")
     async def help_slash(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        for chunk in chunk_message(HELP_TEXT, limit=1900):
+        text = await help_with_locks(interaction, HELP_TEXT, self.bot.tree.walk_commands())
+        for chunk in chunk_message(text, limit=1900):
             await interaction.followup.send(chunk, ephemeral=True)
 
 

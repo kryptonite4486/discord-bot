@@ -44,7 +44,7 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 
 ### P2: product and growth
 15. `/premium` command showing the server's tier, usage this week, renewal date, and an upgrade button.
-16. `/help` marks locked commands with 🔒 and the tier that unlocks them.
+16. ✅ *Done 2026-10-06: gated commands are read from their `requires_feature` checks; marks and a `/premium` footer show only while tiers are enforced.* `/help` marks locked commands with 🔒 and the tier that unlocks them.
 17. Trials: a 14-day Full trial once per guild, recorded as an entitlement with source `trial`.
 18. Abuse controls: per-user rate limits on ingest, and a per-owner cap on free servers to stop people farming free quota across many servers.
 19. Check the game publisher's terms on commercial companion tools that process game screenshots.
