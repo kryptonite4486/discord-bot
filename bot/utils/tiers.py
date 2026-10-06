@@ -65,7 +65,7 @@ SOURCE_NAMES = {
     "stripe": "subscribed",
     "gift": "gifted",
     "trial": "trial",
-    "code": "code",
+    "code": "from a gift code",
 }
 
 

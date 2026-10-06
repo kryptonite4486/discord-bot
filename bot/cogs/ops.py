@@ -1,5 +1,5 @@
 """Operator-only commands: reload, sync, backup, queue, purges, usage, and
-gifting plans (grant, revoke, extend, show, list).
+gifting plans (grant, revoke, extend, show, list, and gift codes).
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -21,6 +21,7 @@ from discord.ext import commands
 from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
 from bot.utils.fair_queue import GuildQueueState
+from bot.utils.gift_codes import code_hint, generate_code, hash_code, normalize_code
 from bot.utils.retention import RemovedServer, removed_servers
 from bot.utils.tiers import TIERS, status_from_entitlements
 
@@ -65,11 +66,13 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.retention",
     ),
     "bot.cogs.ops": (
+        "bot.utils.gift_codes",
         "bot.utils.backup",
         "bot.utils.command_sync",
         "bot.utils.retention",
     ),
     "bot.cogs.premium": (
+        "bot.utils.gift_codes",
         "bot.utils.tiers",
     ),
 }
@@ -335,6 +338,34 @@ def format_entitlement_list(rows: list[dict], names: dict[str, str], within_days
     if len(rows) > MAX_USAGE_ROWS:
         lines.append(f"…and {len(rows) - MAX_USAGE_ROWS} more")
     return "\n".join(lines)
+
+
+def _code_state(row: dict, now: str) -> str:
+    if row["RevokedAt"]:
+        return f"revoked {row['RevokedAt'][:10]}"
+    if row["Uses"] >= row["MaxUses"]:
+        return "used up"
+    if row["ExpiresAt"] and row["ExpiresAt"] <= now:
+        return f"expired {row['ExpiresAt'][:10]}"
+    return f"redeemable until {row['ExpiresAt'][:10]}" if row["ExpiresAt"] else "redeemable"
+
+
+def format_code_list(rows: list[dict], now: str, *, include_inactive: bool) -> str:
+    title = "**Gift codes**" if include_inactive else "**Redeemable gift codes**"
+    if not rows:
+        return title + "\nNone."
+    lines = [title]
+    for r in rows[:MAX_USAGE_ROWS]:
+        tier = TIERS[r["Tier"]].name if r["Tier"] in TIERS else r["Tier"]
+        lasts = f"{r['DurationDays']} days" if r["DurationDays"] is not None else "permanent"
+        note = f" — {r['Note']}" if r.get("Note") else ""
+        lines.append(
+            f"• #{r['Id']} `…{r['Hint']}` {tier}, {lasts}: {r['Uses']}/{r['MaxUses']} used, "
+            f"{_code_state(r, now)}{note}"
+        )
+    if len(rows) > MAX_USAGE_ROWS:
+        lines.append(f"…and {len(rows) - MAX_USAGE_ROWS} more")
+    return "\n".join(lines)[:1900]
 
 
 def is_operator(bot: commands.Bot, user_id: int) -> bool:
@@ -629,6 +660,95 @@ class Ops(commands.Cog):
         await interaction.response.send_message(
             format_entitlement_list(rows, names, expiring_within), ephemeral=True
         )
+
+    # --- Gift codes -----------------------------------------------------------
+    # Covered by interaction_check above like every /ops command: discord.py
+    # runs the cog's check for commands in nested groups too.
+
+    code = app_commands.Group(name="code", description="Redeemable gift codes", parent=ops)
+
+    @code.command(name="create", description="Create a code that servers redeem with /redeem")
+    @app_commands.describe(
+        tier="Plan the code gives",
+        duration="How long the plan lasts once redeemed",
+        uses="How many servers can redeem it (one use per server)",
+        expires="Days until the code can no longer be redeemed (default: never)",
+        note="What it's for, e.g. a giveaway (kept in the audit log)",
+    )
+    @app_commands.choices(tier=GIFT_TIER_CHOICES, duration=DURATION_CHOICES)
+    async def code_create(
+        self,
+        interaction: discord.Interaction,
+        tier: app_commands.Choice[str],
+        duration: app_commands.Choice[str],
+        uses: app_commands.Range[int, 1, 1000],
+        expires: app_commands.Range[int, 1, 365] | None = None,
+        note: str | None = None,
+    ) -> None:
+        now = self._now()
+        text = generate_code()
+        normalized = normalize_code(text)
+        expires_at = (now + timedelta(days=expires)).strftime(_TS) if expires else None
+        code_id = await self.bot.db.create_gift_code(
+            hash_code(normalized), code_hint(normalized), tier.value,
+            duration_days=None if duration.value == "permanent" else int(duration.value),
+            max_uses=uses, expires_at=expires_at,
+            created_by=str(interaction.user.id), note=note,
+        )
+        log.warning("Gift code #%d: %s %s, %d use(s), until %s, by %s (%s)",
+                    code_id, tier.name, duration.name, uses, expires_at or "no end",
+                    interaction.user, note)
+        await interaction.response.send_message(
+            f"Code #{code_id}: **{tier.name}** for **{duration.name.lower()}**, "
+            f"{uses} server(s), redeemable "
+            f"{'until ' + expires_at[:10] if expires_at else 'until used up or revoked'}.\n"
+            f"# `{text}`\n"
+            "Copy it now: only a hash is stored, so it can't be shown again. "
+            "A server admin redeems it with `/redeem code:<code>`.",
+            ephemeral=True,
+        )
+
+    @code.command(name="list", description="Gift codes and how many times each was used")
+    @app_commands.describe(include_inactive="Also show used-up, expired and revoked codes")
+    async def code_list(self, interaction: discord.Interaction, include_inactive: bool = False) -> None:
+        now = self._now().strftime(_TS)
+        rows = await self.bot.db.gift_codes(now, include_inactive=include_inactive)
+        await interaction.response.send_message(
+            format_code_list(rows, now, include_inactive=include_inactive), ephemeral=True
+        )
+
+    @code.command(name="revoke", description="Stop a gift code from being redeemed")
+    @app_commands.describe(
+        code_id="Code number (see /ops code list)",
+        reason="Why (kept in the audit log)",
+        revoke_redeemed="Also revoke the plans servers already got from it",
+    )
+    async def code_revoke(
+        self,
+        interaction: discord.Interaction,
+        code_id: int,
+        reason: str,
+        revoke_redeemed: bool = False,
+    ) -> None:
+        result = await self.bot.db.revoke_gift_code(
+            code_id, at=self._now().strftime(_TS), actor_id=str(interaction.user.id),
+            reason=reason, revoke_redeemed=revoke_redeemed,
+        )
+        if result is None:
+            await interaction.response.send_message(f"No code #{code_id}.", ephemeral=True)
+            return
+        newly, entitlements = result
+        for _, guild_id in entitlements:
+            self.bot.tiers.invalidate(guild_id)
+        log.warning("Code #%d revoked by %s (%s); entitlements revoked: %s",
+                    code_id, interaction.user, reason, [e for e, _ in entitlements])
+        parts = [f"Code #{code_id} revoked." if newly else f"Code #{code_id} was already revoked."]
+        if revoke_redeemed:
+            parts.append(
+                f"Also revoked {', '.join(f'#{e}' for e, _ in entitlements)}."
+                if entitlements else "No active plans from it to revoke."
+            )
+        await interaction.response.send_message(" ".join(parts), ephemeral=True)
 
     @ops.command(name="purges", description="Servers that removed the bot and when their data will be deleted")
     async def purges(self, interaction: discord.Interaction) -> None:

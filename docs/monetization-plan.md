@@ -152,7 +152,8 @@ In the `/ops` group, which is synced only to `CONTROL_GUILD_ID` and checked agai
 | `/ops extend entitlement_id:<id> duration:<…>` | Moves `EndsAt` later. |
 | `/ops show guild_id:<id>` | Effective tier, all entitlements with their sources, usage this week, server name and member count. |
 | `/ops list [source:gift] [expiring_within:14d]` | Lists active gifts, for review and renewal. |
-| `/ops code create tier:full duration:90d uses:1 [expires]` | Creates a redeemable code for giveaways and partners. |
+| `/ops code create tier:full duration:90d uses:1 [expires]` | Creates a redeemable code for giveaways and partners. Shown once; only its hash is stored (table `GiftCode`). |
+| `/ops code list` / `/ops code revoke code_id:<n>` | Lists codes with their uses; stops one being redeemed (optionally revoking plans already redeemed). |
 | `/redeem code:<code>` *(server admin, public)* | Claims a code for the current server, creating an entitlement with `Source='code'`. |
 
 ### Rules
@@ -169,7 +170,7 @@ Why not Discord test entitlements? They are meant for testing, and creating them
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **0. Harden** (P0 items 1–7) | Owner-only `/ops`, `GuildSettings` + `/setup`, usage metering (counting only, no enforcement), fair queue, deletion, ToS/Privacy, `/ingest batch` via @mention, intent off | No server admin can affect another server; a week of real usage data per guild |
-| **1. Entitlements without billing** 🟡 *slice 1 built 2026-10-06: tiers, feature checks, weekly OCR quota, `/premium`, `/ops grant/revoke/extend/show/list`, `TIERS_ENFORCED` off by default. Still to do: history windows, channel limit, chart watermark, priority lane, codes/`/redeem`, expiry reminders* | `GuildEntitlement`, tier policy, gates and quotas, `/premium`, gifting commands, permanent Full gift for existing servers | Gates covered by tests; your own server unaffected; 2–3 friendly alliances on gifted Full and Mid |
+| **1. Entitlements without billing** 🟡 *slice 1 built 2026-10-06: tiers, feature checks, weekly OCR quota, `/premium`, `/ops grant/revoke/extend/show/list`, `TIERS_ENFORCED` off by default. Gift codes built 2026-10-06: `/ops code create/list/revoke` and `/redeem` (hashed codes, use limits, expiry, one redemption per server, rate-limited). Still to do: history windows, channel limit, chart watermark, priority lane, expiry reminders* | `GuildEntitlement`, tier policy, gates and quotas, `/premium`, gifting commands, permanent Full gift for existing servers | Gates covered by tests; your own server unaffected; 2–3 friendly alliances on gifted Full and Mid |
 | **2. Billing** | Discord SKUs and entitlement events, reconciliation on startup, downgrade/grace handling, trials | A test purchase upgrades, cancels and downgrades a server correctly |
 | **3. Launch** | Support server, App Directory listing, founding-alliance offer | First 10 paying servers |
 | **4. Full-tier extras** | Scheduled weekly report, role-based access, cross-server alliance view, cloud OCR fallback | Driven by what paying servers ask for |

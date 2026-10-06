@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -79,9 +80,37 @@ CREATE TABLE IF NOT EXISTS EntitlementAudit (
     Id      INTEGER PRIMARY KEY,
     At      TEXT NOT NULL DEFAULT (datetime('now')),
     ActorId TEXT,
-    Action  TEXT NOT NULL,  -- grant | revoke | extend
-    GuildId TEXT NOT NULL,
+    Action  TEXT NOT NULL,  -- grant | revoke | extend | redeem | code_create | code_revoke
+    GuildId TEXT NOT NULL,  -- '' for code_create and code_revoke
     Detail  TEXT
+);
+
+-- Redeemable gift codes (/ops code, /redeem). Only a hash of the code is
+-- kept; Hint is its last four characters. DurationDays NULL = permanent.
+-- ExpiresAt NULL = can be redeemed until used up or revoked.
+CREATE TABLE IF NOT EXISTS GiftCode (
+    Id           INTEGER PRIMARY KEY,
+    CodeHash     TEXT    NOT NULL UNIQUE,
+    Hint         TEXT    NOT NULL,
+    Tier         TEXT    NOT NULL,
+    DurationDays INTEGER,
+    MaxUses      INTEGER NOT NULL,
+    Uses         INTEGER NOT NULL DEFAULT 0,
+    ExpiresAt    TEXT,
+    CreatedBy    TEXT,
+    Note         TEXT,
+    CreatedAt    TEXT    NOT NULL DEFAULT (datetime('now')),
+    RevokedAt    TEXT
+);
+
+-- One row per server that redeemed a code; the key allows one per server.
+CREATE TABLE IF NOT EXISTS GiftCodeRedemption (
+    CodeId        INTEGER NOT NULL REFERENCES GiftCode (Id),
+    GuildId       TEXT    NOT NULL,
+    UserId        TEXT    NOT NULL,
+    EntitlementId INTEGER NOT NULL,
+    RedeemedAt    TEXT    NOT NULL,
+    PRIMARY KEY (CodeId, GuildId)
 );
 
 -- Per-server usage, one row per UTC day and measure (see USAGE_KINDS).
@@ -130,6 +159,8 @@ CREATE TABLE IF NOT EXISTS GuildSettings (
 """
 
 LEGACY_GUILD_FALLBACK = "legacy"
+# Timestamp format of entitlement and gift-code columns (UTC).
+_TS = "%Y-%m-%d %H:%M:%S"
 
 
 class Database:
@@ -1303,6 +1334,196 @@ class Database:
             "INSERT INTO EntitlementAudit (ActorId, Action, GuildId, Detail) VALUES (?, ?, ?, ?)",
             (actor_id, action, guild_id, detail),
         )
+
+    # --- Gift codes (/ops code, /redeem) ------------------------------------
+
+    async def create_gift_code(
+        self,
+        code_hash: str,
+        hint: str,
+        tier: str,
+        *,
+        duration_days: int | None,
+        max_uses: int,
+        expires_at: str | None,
+        created_by: str | None,
+        note: str | None,
+    ) -> int:
+        """Store a new code (its hash only) and audit it; return its Id."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO GiftCode
+                    (CodeHash, Hint, Tier, DurationDays, MaxUses, ExpiresAt, CreatedBy, Note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (code_hash, hint, tier, duration_days, max_uses, expires_at, created_by, note),
+            )
+            code_id = int(cursor.lastrowid)
+            lasts = f"{duration_days}d" if duration_days is not None else "permanent"
+            await self._audit(
+                created_by, "code_create", "",
+                f"code #{code_id} (…{hint}) {tier} {lasts}, {max_uses} use(s), "
+                f"redeemable until {expires_at or 'no end'}: {note or ''}".strip(),
+            )
+            await self.conn.commit()
+        return code_id
+
+    async def get_gift_code(self, code_id: int) -> dict[str, Any] | None:
+        async with self.conn.execute("SELECT * FROM GiftCode WHERE Id = ?", (code_id,)) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def gift_codes(self, now: str, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        """Codes, newest first; by default only ones that can still be redeemed."""
+        where = (
+            "" if include_inactive else
+            "WHERE RevokedAt IS NULL AND Uses < MaxUses AND (ExpiresAt IS NULL OR ExpiresAt > :now)"
+        )
+        async with self.conn.execute(
+            f"SELECT * FROM GiftCode {where} ORDER BY Id DESC", {"now": now}
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def gift_code_redemptions(self, code_id: int) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            "SELECT * FROM GiftCodeRedemption WHERE CodeId = ? ORDER BY RedeemedAt",
+            (code_id,),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def revoke_gift_code(
+        self,
+        code_id: int,
+        *,
+        at: str,
+        actor_id: str | None,
+        reason: str | None,
+        revoke_redeemed: bool = False,
+    ) -> tuple[bool, list[tuple[int, str]]] | None:
+        """Stop a code being redeemed; None if there's no such code.
+
+        Returns (code newly revoked, [(entitlement id, guild id) revoked]).
+        With ``revoke_redeemed``, the plans servers already got from the code
+        are revoked too (never deleted), each with its own audit entry.
+        """
+        async with self._write_lock:
+            async with self.conn.execute(
+                "SELECT CodeHash, Hint FROM GiftCode WHERE Id = ?", (code_id,)
+            ) as cursor:
+                code = await cursor.fetchone()
+            if code is None:
+                return None
+            cursor = await self.conn.execute(
+                "UPDATE GiftCode SET RevokedAt = ? WHERE Id = ? AND RevokedAt IS NULL",
+                (at, code_id),
+            )
+            newly = cursor.rowcount > 0
+            if newly:
+                await self._audit(
+                    actor_id, "code_revoke", "",
+                    f"code #{code_id} (…{code['Hint']}): {reason or ''}".strip(),
+                )
+            revoked: list[tuple[int, str]] = []
+            if revoke_redeemed:
+                async with self.conn.execute(
+                    "SELECT Id, GuildId FROM GuildEntitlement "
+                    "WHERE Source = 'code' AND ExternalId = ? AND RevokedAt IS NULL",
+                    (code["CodeHash"],),
+                ) as cursor:
+                    revoked = [(int(r["Id"]), str(r["GuildId"])) for r in await cursor.fetchall()]
+                for ent_id, guild_id in revoked:
+                    await self.conn.execute(
+                        "UPDATE GuildEntitlement SET RevokedAt = ? WHERE Id = ?", (at, ent_id)
+                    )
+                    await self._audit(
+                        actor_id, "revoke", guild_id,
+                        f"#{ent_id} with code #{code_id}: {reason or ''}".strip(),
+                    )
+            await self.conn.commit()
+        return newly, revoked
+
+    async def redeem_gift_code(
+        self, code_hash: str, guild_id: str, user_id: str, *, now: datetime
+    ) -> tuple[str, dict[str, Any]]:
+        """Claim a code for a server, creating a Source='code' entitlement.
+
+        Returns (outcome, details). Outcome is 'ok' (details: entitlement_id,
+        tier, ends_at, code_id) or one of 'invalid', 'revoked', 'expired',
+        'already' (this server already redeemed it) and 'used_up'.
+
+        Race-safe: the write lock serializes redemptions in this process, and
+        the conditional use-count update plus the (CodeId, GuildId) key keep
+        the limits even if another connection writes at the same time.
+        """
+        now_s = now.strftime(_TS)
+        async with self._write_lock:
+            async with self.conn.execute(
+                "SELECT * FROM GiftCode WHERE CodeHash = ?", (code_hash,)
+            ) as cursor:
+                code = await cursor.fetchone()
+            if code is None:
+                return "invalid", {}
+            details: dict[str, Any] = {"code_id": int(code["Id"]), "tier": code["Tier"]}
+            if code["RevokedAt"]:
+                return "revoked", details
+            if code["ExpiresAt"] and code["ExpiresAt"] <= now_s:
+                return "expired", details
+            async with self.conn.execute(
+                "SELECT 1 FROM GiftCodeRedemption WHERE CodeId = ? AND GuildId = ?",
+                (code["Id"], guild_id),
+            ) as cursor:
+                if await cursor.fetchone():
+                    return "already", details
+            if code["Uses"] >= code["MaxUses"]:
+                return "used_up", details
+            ends_at = (
+                None if code["DurationDays"] is None
+                else (now + timedelta(days=int(code["DurationDays"]))).strftime(_TS)
+            )
+            try:
+                cursor = await self.conn.execute(
+                    """
+                    UPDATE GiftCode SET Uses = Uses + 1
+                    WHERE Id = ? AND RevokedAt IS NULL AND Uses < MaxUses
+                      AND (ExpiresAt IS NULL OR ExpiresAt > ?)
+                    """,
+                    (code["Id"], now_s),
+                )
+                if cursor.rowcount == 0:
+                    await self.conn.rollback()
+                    return "used_up", details
+                cursor = await self.conn.execute(
+                    """
+                    INSERT INTO GuildEntitlement
+                        (GuildId, Tier, Source, ExternalId, StartsAt, EndsAt, GrantedBy, Reason)
+                    VALUES (?, ?, 'code', ?, ?, ?, ?, ?)
+                    """,
+                    (guild_id, code["Tier"], code_hash, now_s, ends_at, user_id,
+                     f"code #{code['Id']}"),
+                )
+                entitlement_id = int(cursor.lastrowid)
+                await self.conn.execute(
+                    """
+                    INSERT INTO GiftCodeRedemption (CodeId, GuildId, UserId, EntitlementId, RedeemedAt)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (code["Id"], guild_id, user_id, entitlement_id, now_s),
+                )
+                await self._audit(
+                    user_id, "redeem", guild_id,
+                    f"#{entitlement_id} {code['Tier']} until {ends_at or 'no end'} "
+                    f"from code #{code['Id']} (…{code['Hint']})",
+                )
+                await self.conn.commit()
+            except aiosqlite.IntegrityError:
+                await self.conn.rollback()
+                return "already", details
+            except BaseException:
+                await self.conn.rollback()
+                raise
+        details.update(entitlement_id=entitlement_id, ends_at=ends_at)
+        return "ok", details
 
     # --- Server settings (/setup) -------------------------------------------
 
