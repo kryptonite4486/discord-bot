@@ -82,25 +82,19 @@ def _attachment(aid: int, name: str) -> SimpleNamespace:
 
 
 class BatchFlowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_batch_collects_only_mentioning_messages_until_done(self) -> None:
-        user, channel = SimpleNamespace(id=7, mention="<@7>"), SimpleNamespace(id=55)
+    USER = SimpleNamespace(id=7, mention="<@7>")
+    CHANNEL = SimpleNamespace(id=55)
+
+    def _msg(self, content, mention_ids=(), attachments=(), author=None):
+        return SimpleNamespace(
+            content=content, author=author or self.USER, channel=self.CHANNEL,
+            mentions=[SimpleNamespace(id=i) for i in mention_ids],
+            attachments=list(attachments), add_reaction=AsyncMock(),
+        )
+
+    async def _run_batch(self, incoming):
+        """Run /ingest batch over ``incoming``; return (processed, armed, followups)."""
         bot_user = SimpleNamespace(id=BOT_ID, mention=f"<@{BOT_ID}>", display_name="LastZ Assistant")
-
-        def msg(content, mention_ids=(), attachments=(), author=user):
-            return SimpleNamespace(
-                content=content, author=author, channel=channel,
-                mentions=[SimpleNamespace(id=i) for i in mention_ids],
-                attachments=list(attachments), add_reaction=AsyncMock(),
-            )
-
-        incoming = [
-            msg("", attachments=[_attachment(1, "ignored.png")]),  # no mention
-            msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(2, "a.png")], author=SimpleNamespace(id=8)),  # someone else
-            msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(3, "b.png"), _attachment(4, "c.png")]),
-            msg("done"),  # "done" without the mention is ignored too
-            msg(f"<@{BOT_ID}> done", [BOT_ID]),
-            msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(5, "late.png")]),  # after done
-        ]
 
         async def wait_for(event, check, timeout):
             while incoming:
@@ -114,18 +108,23 @@ class BatchFlowTests(unittest.IsolatedAsyncioTestCase):
         async def load_sources(attachments):
             return [ImageSource(key=str(a.id), filename=a.filename, data=b"") for a in attachments], []
 
-        processed = []
+        processed: list[str] = []
 
         async def process(images, *args, **kwargs):
             processed.extend(i.filename for i in images)
             return "Batch complete"
 
-        armed = []
+        armed: list[str] = []
+        followups: list[str] = []
+
+        async def followup_send(text, **kwargs):
+            followups.append(text)
+
         interaction = SimpleNamespace(
             guild_id=1, channel_id=55, channel=SimpleNamespace(id=55, send=AsyncMock(return_value=None)),
-            user=user,
+            user=self.USER,
             response=SimpleNamespace(send_message=AsyncMock(side_effect=lambda text, **k: armed.append(text))),
-            followup=SimpleNamespace(send=AsyncMock()),
+            followup=SimpleNamespace(send=followup_send),
             is_expired=lambda: False,
         )
         with patch.object(cog, "_load_sources", load_sources), patch.object(
@@ -134,10 +133,54 @@ class BatchFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog.ingest_batch.callback(
                 cog, interaction, SimpleNamespace(value="kills"), "2026-10-04", 10
             )
+        return processed, armed, followups
+
+    async def test_batch_collects_only_mentioning_messages_until_done(self) -> None:
+        incoming = [
+            self._msg("", attachments=[_attachment(1, "ignored.png")]),  # no mention
+            self._msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(2, "a.png")], author=SimpleNamespace(id=8)),  # someone else
+            self._msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(3, "b.png"), _attachment(4, "c.png")]),
+            self._msg("done"),  # "done" without the mention is ignored too
+            self._msg(f"<@{BOT_ID}> done", [BOT_ID]),
+            self._msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(5, "late.png")]),  # after done
+        ]
+        with self.assertLogs("bot.cogs.ingest", level="INFO") as logs:
+            processed, armed, followups = await self._run_batch(incoming)
         self.assertEqual(processed, ["b.png", "c.png"])
         self.assertIn(f"@mentioning <@{BOT_ID}>", armed[0])
         self.assertIn("@LastZ Assistant done", armed[0])
         self.assertEqual(len(incoming), 1)  # stopped at "done"
+        # Two missed mentions: one hint, every miss logged, plus a total.
+        hints = [f for f in followups if "can't see messages" in f]
+        self.assertEqual(len(hints), 1)
+        self.assertIn("not the role", hints[0])
+        misses = [r for r in logs.output if "without a bot mention" in r]
+        self.assertEqual(len(misses), 2)
+        self.assertTrue(any("2 message(s) ignored" in r for r in logs.output))
+
+    async def test_batch_with_only_missed_mentions_explains_why_it_got_nothing(self) -> None:
+        incoming = [
+            self._msg("", attachments=[_attachment(1, "a.png")]),
+            self._msg("", attachments=[_attachment(2, "b.png")]),
+        ]
+        with self.assertLogs("bot.cogs.ingest", level="INFO"):
+            processed, _, followups = await self._run_batch(incoming)
+        self.assertEqual(processed, [])
+        self.assertEqual(sum("can't see messages" in f for f in followups), 1)
+        self.assertIn(
+            "No images received — batch cancelled. 2 message(s) were ignored because "
+            "they didn't @mention me.",
+            followups,
+        )
+
+    async def test_correct_batch_gets_no_hint(self) -> None:
+        incoming = [
+            self._msg(f"<@{BOT_ID}>", [BOT_ID], [_attachment(3, "b.png")]),
+            self._msg(f"<@{BOT_ID}> done", [BOT_ID]),
+        ]
+        processed, _, followups = await self._run_batch(incoming)
+        self.assertEqual(processed, ["b.png"])
+        self.assertFalse(any("can't see messages" in f for f in followups))
 
 
 if __name__ == "__main__":

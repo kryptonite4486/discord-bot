@@ -252,6 +252,10 @@ python -m unittest discover -s tests
 
 The suite includes `tests/test_vision_samples.py`, which runs every screenshot in `samples/` through the configured vision model (the same entry point and prompts the bot uses) and checks the extracted names and values. It reads `OCR_VISION_*` from `.env` and swaps `host.docker.internal` for `127.0.0.1` when run outside Docker (or set `OCR_VISION_TEST_BASE_URL`). If the server is unreachable those tests are skipped with a reason; set `RUN_VISION_TESTS=0` to skip them deliberately. Everything else runs offline.
 
+### End-to-end tests in Discord
+
+`.claude/skills/discord-e2e/SKILL.md` lets Claude Code test the bot in real Discord through its built-in browser pane, signed in as you, in the control server's test channel only. It runs `/help`, `/ingest batch` (with and without the @mention), the `/ops` views and a clean-up, then checks each result against the bot's logs and database. Uploads use the small fixture `tests/e2e/general_profile_small.jpg` (PrincessPea, HQ 24, Power 65.4M). Ask Claude to "run the Discord end-to-end tests"; sign in yourself if asked, with the QR code from the Discord app.
+
 ## Project layout
 
 ```

@@ -664,12 +664,47 @@ class Ingest(commands.Cog):
                 return MAX_BATCH_IMAGES
             return MAX_INGEST_IMAGES
 
+        # Without the Message Content intent Discord still reports that a
+        # message arrived, just not its text or attachments. A message from
+        # this user that doesn't @mention the bot (or mentions its role) is
+        # invisible to the batch, so say so once instead of failing silently.
+        missed = 0
+        hint_tasks: set[asyncio.Task[None]] = set()
+
+        async def send_missed_mention_hint() -> None:
+            try:
+                await interaction.followup.send(
+                    f"⚠️ I can't see messages that don't @mention me. Re-post your "
+                    f"screenshots with {bot_mention} in the message (pick the bot "
+                    f"from the list, not the role with the same name). "
+                    f"Finish with `@{bot_name} done`.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                log.exception("Failed to send missed-mention hint")
+
         def check(message: discord.Message) -> bool:
+            nonlocal missed
             if message.author.id != interaction.user.id:
                 return False
             if message.channel.id != channel.id:
                 return False
             if not mentions_user(message, bot_user.id):
+                missed += 1
+                log.info(
+                    "Batch ignored a message without a bot mention "
+                    "(guild=%s channel=%s user=%s, miss %d)",
+                    guild_id,
+                    channel_id,
+                    interaction.user.id,
+                    missed,
+                )
+                if missed == 1:
+                    task = asyncio.get_running_loop().create_task(
+                        send_missed_mention_hint()
+                    )
+                    hint_tasks.add(task)
+                    task.add_done_callback(hint_tasks.discard)
                 return False
             if batch_word(message.content, bot_user.id) in BATCH_DONE_WORDS:
                 return True
@@ -717,9 +752,26 @@ class Ingest(commands.Cog):
                 ephemeral=True,
             )
 
+        # Deliver a pending hint before the batch's own replies, so it's never lost.
+        if hint_tasks:
+            await asyncio.gather(*hint_tasks, return_exceptions=True)
+        if missed:
+            log.info(
+                "Batch ended with %d message(s) ignored for a missing bot mention "
+                "(guild=%s channel=%s user=%s)",
+                missed,
+                guild_id,
+                channel_id,
+                interaction.user.id,
+            )
         if not collected:
+            reason = (
+                f" {missed} message(s) were ignored because they didn't @mention me."
+                if missed
+                else ""
+            )
             await interaction.followup.send(
-                "No images received — batch cancelled.",
+                f"No images received — batch cancelled.{reason}",
                 ephemeral=True,
             )
             return
