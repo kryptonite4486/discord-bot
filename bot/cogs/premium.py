@@ -23,6 +23,17 @@ def _channel_cap(policy) -> str:
     return "any" if policy.max_channels is None else str(policy.max_channels)
 
 
+PLANS = (FREE, MID, FULL)
+# Label and column widths keep each table row at TABLE_WIDTH characters, so the
+# code block doesn't wrap in a narrow window or on a phone.
+LABEL_WIDTH = 20
+TABLE_WIDTH = LABEL_WIDTH + 5 + 9 + 8
+
+
+def _row(label: str, free, mid, full) -> str:
+    return f"{label:<{LABEL_WIDTH}}{free!s:>5}{mid!s:>9}{full!s:>8}"
+
+
 def format_premium(
     status: TierStatus, used: int, *, enforced: bool, channels: int | None = None
 ) -> str:
@@ -39,17 +50,13 @@ def format_premium(
         "",
         "**What each plan includes**",
         "```",
-        f"{'':<34}{FREE.name:>8}{MID.name:>10}{FULL.name:>9}",
-        f"{'Screenshots per week':<34}"
-        f"{FREE.ocr_images_per_week:>8}{MID.ocr_images_per_week:>10}{FULL.ocr_images_per_week:>9}",
-        f"{'Weeks of history in reports':<34}"
-        f"{_weeks(FREE):>8}{_weeks(MID):>10}{_weeks(FULL):>9}",
-        f"{'Channels with data':<34}"
-        f"{_channel_cap(FREE):>8}{_channel_cap(MID):>10}{_channel_cap(FULL):>9}",
+        _row("", FREE.name, MID.name, FULL.name),
+        _row("Screenshots / week", *(t.ocr_images_per_week for t in PLANS)),
+        _row("Weeks of history", *(_weeks(t) for t in PLANS)),
+        _row("Channels with data", *(_channel_cap(t) for t in PLANS)),
     ]
     for key, label in FEATURE_LABELS.items():
-        marks = ["✓" if t.allows(key) else "–" for t in (FREE, MID, FULL)]
-        lines.append(f"{label:<34}{marks[0]:>8}{marks[1]:>10}{marks[2]:>9}")
+        lines.append(_row(label, *("✓" if t.allows(key) else "–" for t in PLANS)))
     lines.append("```")
     lines.append(
         "Manual entry, `/ingest image`, `/ingest text`, the weekly, versus, tech "
@@ -70,13 +77,14 @@ def _weeks(policy) -> str:
 
 # Short labels for the comparison table, in display order.
 FEATURE_LABELS = {
-    "zip_batch": "/ingest zip and /ingest batch",
-    "advanced_reports": "Player, trend and growth reports",
-    "name_tools": "Duplicate-name tools",
-    "multi_channel_reports": "Reports across several channels",
-    "clean_charts": "Charts without watermark",
+    "zip_batch": "/ingest zip & batch",
+    "advanced_reports": "Player/trend/growth",
+    "name_tools": "Duplicate names",
+    "multi_channel_reports": "Server-wide reports",
+    "clean_charts": "Unwatermarked charts",
 }
 assert set(FEATURE_LABELS) == set(FEATURE_NAMES), "label every gated feature"
+assert all(len(label) <= LABEL_WIDTH for label in FEATURE_LABELS.values()), "labels must fit"
 
 
 REDEEM_FAILURES = {

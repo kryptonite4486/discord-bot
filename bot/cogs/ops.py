@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -392,6 +393,20 @@ def is_operator(bot: commands.Bot, user_id: int) -> bool:
     return user_id in bot.settings.bot_owner_ids
 
 
+
+_GUILD_ID_IN_LABEL = re.compile(r"\((\d{15,22})\)\s*$")
+
+
+def parse_guild_id(text: str) -> str:
+    """The server ID in a guild_id option.
+
+    Normally the autocomplete sends just the ID, but if the field is edited
+    after picking, Discord sends the visible label "Name (123…)" instead.
+    """
+    text = text.strip()
+    match = _GUILD_ID_IN_LABEL.search(text)
+    return match.group(1) if match else text
+
 class Ops(commands.Cog):
     """Bot operator commands (owner-only, control server only)."""
 
@@ -547,7 +562,7 @@ class Ops(commands.Cog):
         reason: str,
         notify: bool = False,
     ) -> None:
-        guild_id = guild_id.strip()
+        guild_id = parse_guild_id(guild_id)
         if not guild_id.isdigit():
             await interaction.response.send_message("That isn't a server ID.", ephemeral=True)
             return
@@ -599,7 +614,7 @@ class Ops(commands.Cog):
         reason: str,
         entitlement_id: int | None = None,
     ) -> None:
-        guild_id = guild_id.strip()
+        guild_id = parse_guild_id(guild_id)
         now = self._now().strftime(_TS)
         if entitlement_id is not None:
             row = await self.bot.db.get_entitlement(entitlement_id)
@@ -672,7 +687,7 @@ class Ops(commands.Cog):
     @ops.command(name="show", description="A server's plan, entitlements and recent changes")
     @app_commands.autocomplete(guild_id=_guild_autocomplete)
     async def show(self, interaction: discord.Interaction, guild_id: str) -> None:
-        guild_id = guild_id.strip()
+        guild_id = parse_guild_id(guild_id)
         rows = await self.bot.db.entitlements_for(guild_id)
         audit = await self.bot.db.entitlement_audit(guild_id)
         used = await self.bot.tiers.ocr_used_this_week(guild_id)

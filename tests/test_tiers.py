@@ -21,8 +21,9 @@ from bot.cogs.ops import (  # noqa: E402
     format_entitlement_list,
     format_show,
     gift_end,
+    parse_guild_id,
 )
-from bot.cogs.premium import format_premium  # noqa: E402
+from bot.cogs.premium import TABLE_WIDTH, format_premium  # noqa: E402
 from bot.cogs.reports import ReportScope, Reports  # noqa: E402
 from bot.db import Database  # noqa: E402
 from bot.reporting import charts  # noqa: E402
@@ -321,6 +322,20 @@ class OpsFormattingTests(unittest.TestCase):
         self.assertIn("aren't switched on yet", text)
         self.assertLess(len(text), 2000)
         self.assertNotIn("aren't switched on", format_premium(TierStatus(FREE), 0, enforced=True))
+
+    def test_premium_table_fits_narrow_screens(self) -> None:
+        text = format_premium(TierStatus(FREE), 0, enforced=True, channels=1)
+        table = text.split("```")[1].strip("\n").splitlines()
+        self.assertGreater(len(table), 5)
+        self.assertTrue(all(len(row) <= TABLE_WIDTH <= 42 for row in table), table)
+
+    def test_parse_guild_id_accepts_autocomplete_label(self) -> None:
+        self.assertEqual(parse_guild_id(" 1556779779280347236 "), "1556779779280347236")
+        self.assertEqual(
+            parse_guild_id("LastZ Bot Control Server (1556779779280347236)"), "1556779779280347236"
+        )
+        self.assertEqual(parse_guild_id("Odd (name) (1556779779280347236) "), "1556779779280347236")
+        self.assertEqual(parse_guild_id("not an id"), "not an id")
 
     def test_upgrade_message_names_plan(self) -> None:
         self.assertIn("**Command** plan", upgrade_message("multi_channel_reports", TierStatus(MID)))
