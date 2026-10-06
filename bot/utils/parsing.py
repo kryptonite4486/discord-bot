@@ -168,28 +168,48 @@ def parse_pasted_rows(
 
 
 def chunk_message(content: str, limit: int = 1900) -> Iterable[str]:
-    """Split long Discord messages on newlines when possible."""
+    """Split long Discord messages on newlines when possible.
+
+    A split inside a ``` code block closes the block at the end of one
+    message and reopens it (same language tag) at the start of the next, so
+    every message renders on its own.
+    """
     if len(content) <= limit:
         yield content
         return
 
+    close = "\n```"
     buf: list[str] = []
     size = 0
+    fence: str | None = None  # opening fence line while inside a code block
+
+    def flush() -> str:
+        text = "".join(buf)
+        if fence is not None:
+            text = text.rstrip("\n") + close
+        return text
+
+    def room() -> int:
+        # Leave space to close an open code block at the end of this message.
+        return limit - (len(close) if fence is not None else 0)
+
     for line in content.splitlines(keepends=True):
-        if size + len(line) > limit and buf:
-            yield "".join(buf)
-            buf = []
-            size = 0
+        if size + len(line) > room() and buf:
+            yield flush()
+            buf = [fence] if fence is not None else []
+            size = len(fence) if fence is not None else 0
         # Hard-split oversized single lines so we never exceed the limit
-        while len(line) > limit:
-            if buf:
-                yield "".join(buf)
-                buf = []
-                size = 0
-            yield line[:limit]
-            line = line[limit:]
+        while size + len(line) > room():
+            take = max(1, room() - size)
+            buf.append(line[:take])
+            yield flush()
+            buf = [fence] if fence is not None else []
+            size = len(fence) if fence is not None else 0
+            line = line[take:]
         buf.append(line)
         size += len(line)
+        if line.lstrip().startswith("```"):
+            fence = None if fence is not None else line.strip() + "\n"
     if buf:
         yield "".join(buf)
 

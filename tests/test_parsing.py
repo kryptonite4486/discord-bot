@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from bot.utils.parsing import (  # noqa: E402
     chunk_fenced_md,
+    chunk_message,
     format_value,
     parse_numeric_value,
     parse_pasted_rows,
@@ -381,6 +382,53 @@ class ChunkFenceTests(unittest.TestCase):
         self.assertIn("2026-09-27", chunks[0])
         self.assertTrue(chunks[0].startswith("```md\n"))
         self.assertTrue(chunks[0].endswith("\n```"))
+
+
+class ChunkMessageTests(unittest.TestCase):
+    def _unfenced(self, chunks: list[str]) -> str:
+        """Join chunks and drop the fences chunk_message added at the splits."""
+        text = chunks[0]
+        for nxt in chunks[1:]:
+            if text.endswith("\n```") and nxt.startswith("```"):
+                text = text[: -len("\n```")] + "\n" + nxt[nxt.index("\n") + 1 :]
+            else:
+                text += nxt
+        return text
+
+    def test_split_inside_code_block_closes_and_reopens_it(self) -> None:
+        body = "\n".join(f"  /cmd{i:02d}   does thing {i}" for i in range(60))
+        text = f"**Header**\n\n```txt\n{body}\n```\n\nFooter text.\n"
+        chunks = list(chunk_message(text, limit=400))
+        self.assertGreater(len(chunks), 2)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 400)
+            self.assertEqual(chunk.count("```") % 2, 0, chunk)  # every block closed
+        self.assertTrue(chunks[1].startswith("```txt\n"))  # language kept
+        self.assertEqual(self._unfenced(chunks), text)  # nothing lost or added
+
+    def test_text_without_code_blocks_is_unchanged(self) -> None:
+        text = "\n".join(f"line {i}" for i in range(200)) + "\n"
+        chunks = list(chunk_message(text, limit=300))
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks), text)
+        self.assertFalse(any("```" in c for c in chunks))
+
+    def test_oversized_line_inside_code_block(self) -> None:
+        text = "```\n" + "x" * 1000 + "\n```\n"
+        chunks = list(chunk_message(text, limit=300))
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 300)
+            self.assertEqual(chunk.count("```") % 2, 0, chunk)
+        self.assertEqual("".join(c.replace("```", "").replace("\n", "") for c in chunks), "x" * 1000)
+
+    def test_help_text_messages_are_each_balanced(self) -> None:
+        from bot.cogs.help_cmd import HELP_TEXT
+
+        chunks = list(chunk_message(HELP_TEXT, limit=1900))
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), 1900)
+            self.assertEqual(chunk.count("```") % 2, 0)
+        self.assertEqual(self._unfenced(chunks), HELP_TEXT)
 
 
 if __name__ == "__main__":
