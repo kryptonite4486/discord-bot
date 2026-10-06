@@ -1,5 +1,5 @@
 """Operator-only commands: reload, sync, backup, health, queue, purges, usage,
-capacity, export, and gifting plans (grant, revoke, extend, show, list, gift
+capacity, abuse, export, and gifting plans (grant, revoke, extend, show, list, gift
 codes, and resetting a server's free trial).
 
 These act on the whole bot, not one server, so they are limited to the
@@ -23,6 +23,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.db.database import USAGE_KINDS
+from bot.utils.abuse import FREE_LINK_DAYS, PersonServers, UserWindow
 from bot.utils.backup import create_backup, last_backup_time
 from bot.utils.capacity import (
     WEEKDAYS,
@@ -94,6 +95,7 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.report_channel",
     ),
     "bot.cogs.premium": (
+        "bot.utils.rate_limit",
         "bot.utils.gift_codes",
         "bot.utils.tiers",
     ),
@@ -517,6 +519,57 @@ def format_code_list(rows: list[dict], now: str, *, include_inactive: bool) -> s
         )
     if len(rows) > MAX_USAGE_ROWS:
         lines.append(f"…and {len(rows) - MAX_USAGE_ROWS} more")
+    return "\n".join(lines)[:1900]
+
+
+def format_abuse_report(
+    top: list[UserWindow],
+    over: list[PersonServers],
+    names: dict[str, str],
+    *,
+    window_minutes: int,
+    limits: tuple[int, int],
+    admin_multiplier: int,
+    cap: int,
+    enforced: bool,
+) -> str:
+    """The rate-limit window's busiest people and those over the Free-server cap."""
+    requests, images = limits
+    caps = ", ".join(
+        c for c in (f"{requests} requests" if requests else "", f"{images} images" if images else "")
+        if c
+    ) or "off"
+    lines = [
+        f"**OCR rate limit** — last {window_minutes} min, per person per server "
+        f"({caps}; ×{admin_multiplier} for Manage Server; operators exempt; resets on restart)"
+    ]
+    if not top:
+        lines.append("No OCR requests in the window.")
+    for r in top:
+        refused = f", **{r.refused} refused**" if r.refused else ""
+        lines.append(
+            f"• <@{r.user_id}> in {names.get(r.guild_id, r.guild_id)}: "
+            f"{r.requests} request(s), {r.images} image(s){refused}"
+        )
+    if cap <= 0:
+        lines.append("\n**Free-server cap** — off (`FREE_SERVERS_PER_OWNER=0`).")
+        return "\n".join(lines)[:1900]
+    mode = "enforced" if enforced else "not enforced, logging only"
+    lines.append(
+        f"\n**Free-server cap** — {cap} Free servers with OCR per person, "
+        f"owner or runner, last {FREE_LINK_DAYS} days ({mode})"
+    )
+    if not over:
+        lines.append(f"Nobody uses OCR in more than {cap} Free servers.")
+    for p in over[:MAX_USAGE_ROWS]:
+        servers = "; ".join(
+            f"{names.get(gid, gid)} ({'/'.join(sorted(roles))}, since {first[:10]})"
+            for gid, (first, roles) in list(p.servers.items())[:5]
+        )
+        more = f"; …and {len(p.servers) - 5} more" if len(p.servers) > 5 else ""
+        lines.append(f"• <@{p.user_id}> (`{p.user_id}`): **{len(p.servers)}** — {servers}{more}")
+    if len(over) > MAX_USAGE_ROWS:
+        lines.append(f"…and {len(over) - MAX_USAGE_ROWS} more")
     return "\n".join(lines)[:1900]
 
 
@@ -1099,6 +1152,36 @@ class Ops(commands.Cog):
         )
 
     @ops.command(
+        name="abuse",
+        description="Busiest OCR users in the rate-limit window, and people over the Free-server cap",
+    )
+    async def abuse(self, interaction: discord.Interaction) -> None:
+        # interaction_check has already checked this; check again so a
+        # change to the cog check can't open this up.
+        if not is_operator(self.bot, interaction.user.id):
+            log.warning("Refused /ops abuse from user %s", interaction.user.id)
+            await interaction.response.send_message(NOT_OPERATOR_MESSAGE, ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        controls = self.bot.abuse
+        s = self.bot.settings
+        names = {str(g.id): g.name for g in self.bot.guilds}
+        await interaction.followup.send(
+            format_abuse_report(
+                controls.limiter.top(),
+                await controls.free_cap.over_cap(),
+                names,
+                window_minutes=s.ingest_rate_window_minutes,
+                limits=controls.limiter.limits(admin=False),
+                admin_multiplier=controls.limiter.admin_multiplier,
+                cap=controls.free_cap.limit,
+                enforced=self.bot.tiers.enforced,
+            ),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @ops.command(
         name="capacity",
         description="OCR cost and demand from the usage ledger, and how many servers fit",
     )
@@ -1160,7 +1243,7 @@ async def setup(bot: commands.Bot) -> None:
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup, health, queue, purges, usage, capacity, export) are disabled"
+            "(/ops reload, sync, backup, health, queue, purges, usage, capacity, abuse, export) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

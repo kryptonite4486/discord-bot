@@ -16,6 +16,7 @@ from bot.utils import setup_logging
 from bot.utils.channel_rules import enforce_channel_rules
 from bot.utils.command_sync import sync_commands
 from bot.utils.guild import reject_dm_interaction
+from bot.utils.abuse import AbuseControls
 from bot.utils.health import HealthState, last_healthy_at
 from bot.utils.tiers import FeatureLocked, Tiers
 from bot.utils.storage import check_persistent_paths
@@ -97,6 +98,8 @@ class LastZAssistant(commands.Bot):
             "Subscription tiers: %s",
             "enforced" if self.settings.tiers_enforced else "not enforced (logging only)",
         )
+        # Per-user OCR rate limit and the Free-server cap (bot/utils/abuse.py).
+        self.abuse = AbuseControls(self.db, self.tiers, self.settings)
         unassigned = await self.db.count_all_unassigned()
         if unassigned:
             log.warning(

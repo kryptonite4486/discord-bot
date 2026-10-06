@@ -59,7 +59,10 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 15. `/premium` command showing the server's tier, usage this week, renewal date, and an upgrade button.
 16. ✅ *Done 2026-10-06: gated commands are read from their `requires_feature` checks; marks and a `/premium` footer show only while tiers are enforced.* `/help` marks locked commands with 🔒 and the tier that unlocks them.
 17. ✅ *Done 2026-10-06: a **Start free 14-day Command trial** button on `/premium`, shown to members with Manage Server while the server can start one (a button rather than `/premium trial`: the offer sits next to what it unlocks, and `/premium` stays one command). It creates a `GuildEntitlement` (`Source='trial'`, `Tier='full'`, `EndsAt` 14 days out) and an `EntitlementAudit` row (`trial`), and records the server in `TrialClaim (GuildId, ClaimedAt)`, all in one transaction; the table's key makes it race-safe. A server with an active Command plan (paid, gifted or code) is refused and told the trial stays available for later; a server on Alliance can start it. Neither `/data delete` nor the removal purge ever touched entitlements, but `TrialClaim` is a separate minimal record (server ID and date) that both explicitly keep, so the rule doesn't depend on entitlement rows surviving; the privacy policy says so. Revoking a trial doesn't make the server eligible again; only `/ops trial-reset` (audited) does. `/premium` shows "Command — trial until YYYY-MM-DD (N days left)"; `/ops show` lists trials and whether the trial was used; the server gets a heads-up in its report channel 3 days before the end listing what changes (no operator DM).* Trials: a 14-day Full trial once per guild, recorded as an entitlement with source `trial`.
-18. Abuse controls: per-user rate limits on ingest, and a per-owner cap on free servers to stop people farming free quota across many servers.
+18. ✅ *Done 2026-10-06 (`bot/utils/abuse.py`, `/ops abuse`).* Abuse controls: per-user rate limits on ingest, and a per-owner cap on free servers to stop people farming free quota across many servers.
+   - **Rate limit** (always on, tiers or not: it protects the OCR server). Per person per server, a sliding window of 6 OCR requests and 60 screenshots per 10 minutes (`INGEST_RATE_*`; 0 turns a cap off). One maximal request (a 50-image zip) always fits an empty window. Checked before anything is downloaded, queued or (for `/ingest batch`) armed, and again for zip and batch once the image count is known; the ephemeral reply gives a Discord relative time to try again. Manage Server members get 3× (`INGEST_RATE_ADMIN_MULTIPLIER`) rather than an exemption: they upload the roster on reset day, but a free server's own admin is also the most likely abuser. Operators are exempt. `/add` and `/ingest text` aren't limited: they never reach OCR and each is one small write. In memory only (a restart clears it); the `/redeem` limiter now shares the same `SlidingWindowLimiter` (`bot/utils/rate_limit.py`).
+   - **Free-server cap** (a tier rule: logs `Free-server cap (not enforced)` and allows while `TIERS_ENFORCED` is off). A person can use OCR in at most `FREE_SERVERS_PER_OWNER` (default 3) Free servers, counting the servers they own and those where they run OCR commands, so alts as owners don't get round it alone. Paid, gifted, code and trial servers don't count, and aren't recorded. Servers are ranked by first OCR use, so the newest is refused and existing ones keep working; a server drops out 30 days after its last OCR use. False positives: 3 covers a main, a farm and a spare; an officer reading screenshots for several alliances is the likely case to hit it, and a gift on the extra servers lifts it. Stored in `FreeOcrLink (UserId, GuildId, Role, FirstAt, LastAt)`: only Discord user IDs and dates, deleted after 30 days unused and with the server's data (`/data delete` whole server, removal purge); covered in the privacy policy.
+   - `/ops abuse` lists the busiest people in the current window (requests, images, refusals) and everyone over the cap with their servers.
 19. Check the game publisher's terms on commercial companion tools that process game screenshots.
 20. Tax and business setup: Discord acts as merchant of record for Premium Apps. If you use Stripe directly you handle sales tax/VAT yourself (Stripe Tax can help).
 
@@ -144,6 +147,14 @@ CREATE TABLE EntitlementAudit (
 -- Built 2026-10-06. One row per server that started its free trial; kept
 -- by /data delete and the removal purge. /ops trial-reset deletes it.
 CREATE TABLE TrialClaim (GuildId TEXT PRIMARY KEY, ClaimedAt TEXT NOT NULL);
+
+-- Built 2026-10-06 (§2 item 18). Who used OCR in which Free server, for the
+-- Free-server cap. Deleted 30 days after LastAt and with the server's data.
+CREATE TABLE FreeOcrLink (
+  UserId TEXT, GuildId TEXT, Role TEXT,  -- 'owner' | 'runner'
+  FirstAt TEXT NOT NULL, LastAt TEXT NOT NULL,
+  PRIMARY KEY (UserId, GuildId, Role)
+);
 ```
 
 The **effective tier** is the highest tier among a guild's active entitlements (not revoked, `StartsAt <= now`, and `EndsAt` empty or in the future), falling back to free. Because of this, a gift and a paid subscription can overlap without conflict, and a lapsed subscription falls back to the gift automatically.
