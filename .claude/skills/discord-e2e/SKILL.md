@@ -33,8 +33,9 @@ sent **as them**, so these rules are not optional.
 
 ## Setup each run
 
-1. `resize_window` to 1280x800 (the app resets the viewport between turns;
-   narrow layouts hide parts of Discord).
+1. Use the pane's own size (`resize_window` preset `desktop`). Forcing
+   1280x800 has stopped clicks and typing from reaching Discord; widen only
+   when something needs it (e.g. the QR code on the login page), then go back.
 2. Navigate to the test channel URL and take a screenshot. If it isn't the
    channel view, see rule 3.
 3. Note the time (`date -u`) so log checks can start from it.
@@ -56,9 +57,14 @@ sent **as them**, so these rules are not optional.
 - **Optional slash options:** when Discord shows an "Options" list you don't
   need (e.g. `scope` on `/data delete`), press Escape, then Enter, to use the
   defaults.
-- **Coordinates:** with the 1280x800 viewport the page is drawn scaled into
-  the top-left of an 800x500 screenshot frame; the message box sits around
-  (260, 253). Take a screenshot before clicking and use what it shows.
+- **Coordinates:** take a screenshot before clicking and use what it shows;
+  the layout changes with the pane's width. Clicking the message box by
+  `find("Message #bot-testing")` ref is more reliable than coordinates.
+- **Check input landed:** if a typed command doesn't show the command list,
+  check with `javascript_tool`:
+  `document.querySelector('[role="textbox"]').innerText` and whether it's
+  `document.activeElement`. If it's empty or unfocused, reset the viewport
+  to `desktop` and click the box again.
 - **Attach a screenshot.** The pane blocks pages from fetching files from this
   Mac, so the image goes inside the script. Encode the fixture:
 
