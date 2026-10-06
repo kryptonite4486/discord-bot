@@ -124,10 +124,20 @@ class Ingest(commands.Cog):
         # a time. Servers take turns, one whole request each.
         self.ocr_queue = FairQueue(s.ocr_max_concurrency)
 
-    def _default_week(self, week: str | None, *, context: str = "ingest") -> str:
+    async def _default_week(
+        self, week: str | None, guild_id: str, *, context: str = "ingest"
+    ) -> str:
+        """The week to save into: the user's, else the server's /setup
+        default, else DEFAULT_WEEK_START, else the current week."""
+        server_default = None
+        if not week:
+            server_default = (await self.bot.db.guild_settings(guild_id))["default_week"]
         if week:
             source = "user"
             raw = week
+        elif server_default:
+            source = "server"
+            raw = server_default
         elif self.bot.settings.default_week_start:
             source = "DEFAULT_WEEK_START"
             raw = self.bot.settings.default_week_start
@@ -363,7 +373,7 @@ class Ingest(commands.Cog):
         try:
             guild_id = guild_id_from_interaction(interaction)
             channel_id = channel_id_from_interaction(interaction)
-            week_start = self._default_week(week)
+            week_start = await self._default_week(week, guild_id)
             hq_val = parse_numeric_value(hq)
             power_val = parse_numeric_value(power)
             await self.bot.db.upsert_metric(
@@ -415,7 +425,7 @@ class Ingest(commands.Cog):
         try:
             guild_id = guild_id_from_interaction(interaction)
             channel_id = channel_id_from_interaction(interaction)
-            week_start = self._default_week(week)
+            week_start = await self._default_week(week, guild_id)
             numeric = parse_numeric_value(value)
             await self.bot.db.upsert_metric(
                 guild_id,
@@ -511,7 +521,7 @@ class Ingest(commands.Cog):
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
-        week_start = self._default_week(week)
+        week_start = await self._default_week(week, guild_id)
 
         names = ", ".join(f"`{img.filename}`" for img in images)
         tip = ""
@@ -563,7 +573,7 @@ class Ingest(commands.Cog):
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
-        week_start = self._default_week(week, context="ingest_zip")
+        week_start = await self._default_week(week, guild_id, context="ingest_zip")
 
         sources, notes = await self._load_sources([archive])
         sources = self._cap_sources(sources)
@@ -639,7 +649,7 @@ class Ingest(commands.Cog):
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
-        week_start = self._default_week(week, context="ingest_batch")
+        week_start = await self._default_week(week, guild_id, context="ingest_batch")
         log.info(
             "Batch OCR starting guild=%s channel=%s kind=%s week_start=%s timeout_min=%s",
             guild_id,
@@ -835,7 +845,7 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
-        week_start = self._default_week(week)
+        week_start = await self._default_week(week, guild_id)
         try:
             count = await self._ingest_pasted(
                 guild_id, channel_id, dataset.value, data, week_start

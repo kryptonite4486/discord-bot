@@ -121,15 +121,25 @@ CREATE TABLE IF NOT EXISTS TriviaSettings (
 
 -- Per-server options set with /setup. No row = defaults. TriviaChannelId:
 -- the only channel trivia runs in (and where cross-server invitations go);
--- NULL = trivia anywhere.
+-- NULL = trivia anywhere. ReportChannelId: where the bot posts to the server
+-- on its own (gift notices); NULL = nowhere. DefaultWeek: 'current' or
+-- 'last', the week /add, /ingest and /report week use when none is given;
+-- NULL = the bot's default (DEFAULT_WEEK_START, else the current week).
+-- Older databases get the last two columns from _migrate_guild_settings_columns.
 CREATE TABLE IF NOT EXISTS GuildSettings (
     GuildId         TEXT PRIMARY KEY,
     TriviaChannelId TEXT,
-    UpdatedAt       TEXT NOT NULL DEFAULT (datetime('now'))
+    UpdatedAt       TEXT NOT NULL DEFAULT (datetime('now')),
+    ReportChannelId TEXT,
+    DefaultWeek     TEXT
 );
 """
 
 LEGACY_GUILD_FALLBACK = "legacy"
+
+# GuildSettings columns added after the table first shipped (TEXT, NULL = unset).
+GUILD_SETTINGS_ADDED_COLUMNS = ("ReportChannelId", "DefaultWeek")
+DEFAULT_WEEK_CHOICES = ("current", "last")
 
 
 class Database:
@@ -157,6 +167,7 @@ class Database:
         await self._migrate_add_guild_id()
         await self._migrate_add_channel_id()
         await self._conn.executescript(SCHEMA_SQL)
+        await self._migrate_guild_settings_columns()
         await self._migrate_trivia_announce_channel()
         await self._conn.commit()
         log.info("Database ready at %s", self.path)
@@ -272,6 +283,14 @@ class Database:
         await self.conn.execute("DROP INDEX IF EXISTS idx_weekly_week")
         await self.conn.commit()
         log.info("WeeklyMetrics ChannelId migration complete")
+
+    async def _migrate_guild_settings_columns(self) -> None:
+        """Add the /setup columns that came after TriviaChannelId."""
+        cols = await self._table_columns("GuildSettings")
+        for name in GUILD_SETTINGS_ADDED_COLUMNS:
+            if name not in cols:
+                await self.conn.execute(f"ALTER TABLE GuildSettings ADD COLUMN {name} TEXT")
+                log.info("Migrating GuildSettings: added %s", name)
 
     async def _migrate_trivia_announce_channel(self) -> None:
         """Move TriviaSettings.AnnounceChannelId into GuildSettings.TriviaChannelId.
@@ -1307,26 +1326,61 @@ class Database:
     # --- Server settings (/setup) -------------------------------------------
 
     async def guild_settings(self, guild_id: str) -> dict[str, Any]:
-        """{"trivia_channel_id": str | None} (defaults if unset)."""
+        """This server's /setup options, None where unset:
+        {"trivia_channel_id", "report_channel_id", "default_week"}."""
         async with self.conn.execute(
-            "SELECT TriviaChannelId FROM GuildSettings WHERE GuildId = ?", (guild_id,)
+            """
+            SELECT TriviaChannelId, ReportChannelId, DefaultWeek
+            FROM GuildSettings WHERE GuildId = ?
+            """,
+            (guild_id,),
         ) as cursor:
             row = await cursor.fetchone()
-        return {"trivia_channel_id": (row["TriviaChannelId"] or None) if row else None}
+        return {
+            "trivia_channel_id": (row["TriviaChannelId"] or None) if row else None,
+            "report_channel_id": (row["ReportChannelId"] or None) if row else None,
+            "default_week": (row["DefaultWeek"] or None) if row else None,
+        }
 
-    async def set_trivia_channel(self, guild_id: str, channel_id: str | None) -> None:
+    async def report_channel_id(self, guild_id: str) -> str | None:
+        """The channel the bot posts this server's notices in; None if unset.
+
+        To post there, use bot.utils.report_channel.send_to_report_channel,
+        which also checks the channel still exists and the bot can post.
+        """
+        async with self.conn.execute(
+            "SELECT ReportChannelId FROM GuildSettings WHERE GuildId = ?", (guild_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (row["ReportChannelId"] or None) if row else None
+
+    async def _set_guild_setting(self, guild_id: str, column: str, value: str | None) -> None:
+        # column comes from the setters below, never from user input.
+        assert column in ("TriviaChannelId", *GUILD_SETTINGS_ADDED_COLUMNS), column
         async with self._write_lock:
             await self.conn.execute(
-                """
-                INSERT INTO GuildSettings (GuildId, TriviaChannelId, UpdatedAt)
+                f"""
+                INSERT INTO GuildSettings (GuildId, {column}, UpdatedAt)
                 VALUES (?, ?, datetime('now'))
                 ON CONFLICT(GuildId) DO UPDATE SET
-                    TriviaChannelId = excluded.TriviaChannelId,
+                    {column} = excluded.{column},
                     UpdatedAt = datetime('now')
                 """,
-                (guild_id, channel_id),
+                (guild_id, value),
             )
             await self.conn.commit()
+
+    async def set_trivia_channel(self, guild_id: str, channel_id: str | None) -> None:
+        await self._set_guild_setting(guild_id, "TriviaChannelId", channel_id)
+
+    async def set_report_channel(self, guild_id: str, channel_id: str | None) -> None:
+        await self._set_guild_setting(guild_id, "ReportChannelId", channel_id)
+
+    async def set_default_week(self, guild_id: str, default_week: str | None) -> None:
+        """'current', 'last', or None for the bot's default."""
+        if default_week is not None and default_week not in DEFAULT_WEEK_CHOICES:
+            raise ValueError(f"default_week must be one of {DEFAULT_WEEK_CHOICES} or None")
+        await self._set_guild_setting(guild_id, "DefaultWeek", default_week)
 
     # --- Trivia --------------------------------------------------------------
 

@@ -358,7 +358,7 @@ class Reports(commands.Cog):
 
     @report.command(name="week", description="Weekly summary for all metrics")
     @app_commands.describe(
-        week="Week start YYYY-MM-DD / current / last",
+        week="Week start YYYY-MM-DD / current / last (default: /setup default week)",
         scope=_SCOPE_DESCRIBE,
         channel=_CHANNEL_DESCRIBE,
         channel2="Additional data channel to include",
@@ -380,6 +380,8 @@ class Reports(commands.Cog):
         )
         if rs is None:
             return
+        if not week:
+            week = (await self.bot.db.guild_settings(rs.guild_id))["default_week"]
         week_start = parse_week_start(week)
         rows = await self.bot.db.get_week_metrics(
             rs.guild_id,

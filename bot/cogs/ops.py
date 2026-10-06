@@ -21,6 +21,7 @@ from discord.ext import commands
 from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
 from bot.utils.fair_queue import GuildQueueState
+from bot.utils.report_channel import ReportChannelUnavailable, send_to_report_channel
 from bot.utils.retention import RemovedServer, removed_servers
 from bot.utils.tiers import TIERS, status_from_entitlements
 
@@ -68,6 +69,7 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.backup",
         "bot.utils.command_sync",
         "bot.utils.retention",
+        "bot.utils.report_channel",
     ),
     "bot.cogs.premium": (
         "bot.utils.tiers",
@@ -273,6 +275,23 @@ def extended_end(current: str, duration: str, now: datetime) -> str | None:
         return None
     base = max(datetime.strptime(current, _TS).replace(tzinfo=timezone.utc), now)
     return (base + timedelta(days=int(duration))).strftime(_TS)
+
+
+def gift_thank_you_embed(tier_name: str, ends: str | None) -> discord.Embed:
+    """The notice /ops grant notify:true posts in the gifted server.
+
+    The operator's reason stays private (it's only in the audit log).
+    """
+    until = "permanently" if ends is None else f"until **{ends[:10]}**"
+    return discord.Embed(
+        title="🎁 A gift for this server",
+        description=(
+            f"This server has been gifted the **{tier_name}** plan of "
+            f"LastZ Assistant {until}. Thank you for being part of it!\n\n"
+            "Run `/premium` to see what's included."
+        ),
+        colour=discord.Colour.gold(),
+    )
 
 
 def _entitlement_line(row: dict, now: str) -> str:
@@ -483,6 +502,7 @@ class Ops(commands.Cog):
         tier="Plan to gift",
         duration="How long the gift lasts",
         reason="Why (kept in the audit log)",
+        notify="Post a thank-you in the server's report channel (see /setup)",
     )
     @app_commands.choices(tier=GIFT_TIER_CHOICES, duration=DURATION_CHOICES)
     @app_commands.autocomplete(guild_id=_guild_autocomplete)
@@ -493,11 +513,16 @@ class Ops(commands.Cog):
         tier: app_commands.Choice[str],
         duration: app_commands.Choice[str],
         reason: str,
+        notify: bool = False,
     ) -> None:
         guild_id = guild_id.strip()
         if not guild_id.isdigit():
             await interaction.response.send_message("That isn't a server ID.", ephemeral=True)
             return
+        # Posting the notice is a second Discord call, so don't risk the
+        # 3-second reply window.
+        if notify:
+            await interaction.response.defer(ephemeral=True)
         now = self._now()
         ends = gift_end(duration.value, now)
         new_id = await self.bot.db.add_entitlement(
@@ -510,11 +535,23 @@ class Ops(commands.Cog):
         warn = "" if name else "\n⚠️ The bot isn't in that server; the gift applies if it's added."
         log.warning("Gift #%d: %s until %s for guild %s by %s (%s)",
                     new_id, tier.name, ends or "no end", guild_id, interaction.user, reason)
-        await interaction.response.send_message(
+        text = (
             f"Gifted **{tier.name}** to **{name or guild_id}** "
-            f"{'permanently' if ends is None else 'until ' + ends[:10]} (#{new_id}).{warn}",
-            ephemeral=True,
+            f"{'permanently' if ends is None else 'until ' + ends[:10]} (#{new_id}).{warn}"
         )
+        if not notify:
+            await interaction.response.send_message(text, ephemeral=True)
+            return
+        try:
+            message = await send_to_report_channel(
+                self.bot, guild_id, embed=gift_thank_you_embed(tier.name, ends)
+            )
+        except ReportChannelUnavailable as exc:
+            log.warning("Gift #%d: no thank-you posted in guild %s: %s", new_id, guild_id, exc)
+            text += f"\n⚠️ Thank-you **not** posted: {exc}. The gift itself is in place."
+        else:
+            text += f"\nThank-you posted in {message.channel.mention}."
+        await interaction.followup.send(text, ephemeral=True)
 
     @ops.command(name="revoke", description="Revoke a server's gifts, or one entitlement")
     @app_commands.describe(

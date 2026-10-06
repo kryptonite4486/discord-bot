@@ -108,6 +108,9 @@ docker compose up --build -d
 | `/setup` | Show this server's settings |
 | `/setup trivia_channel:<#channel>` | Make that the trivia channel |
 | `/setup clear_trivia_channel:True` | Remove the trivia channel |
+| `/setup report_channel:<#channel>` | Where the bot posts notices for this server, such as a gifted plan |
+| `/setup clear_report_channel:True` | Remove the report channel; the bot then never posts on its own |
+| `/setup default_week:<Current week\|Last week\|Bot default>` | The week `/add`, `/ingest` and `/report week` use when you don't give one |
 
 **We recommend a dedicated trivia channel** (e.g. `#trivia`), so matches stay out of the channels that hold your alliance's stats. Once one is set:
 
@@ -115,7 +118,11 @@ docker compose up --build -d
 - `/add` and `/ingest` are refused there, so stats are never added to the trivia channel. Reports still work, since they only read data.
 - Invitations to other servers' cross-server matches are posted there.
 
-With no trivia channel, trivia runs anywhere and nothing is restricted. Commands still appear in the `/` menu in every channel; the bot can't hide them per channel. Server admins can, under **Server Settings → Integrations → LastZ Assistant**: pick a command and add channel overrides. `/setup` is hidden from members without Manage Server and also checks the permission. Settings are stored in `GuildSettings (GuildId, TriviaChannelId, UpdatedAt)`.
+With no trivia channel, trivia runs anywhere and nothing is restricted. Commands still appear in the `/` menu in every channel; the bot can't hide them per channel. Server admins can, under **Server Settings → Integrations → LastZ Assistant**: pick a command and add channel overrides. `/setup` is hidden from members without Manage Server and also checks the permission. **Report channel.** The bot posts there only when it has something for the server on its own: today, the thank-you when a plan is gifted (`/ops grant ... notify:True`); later, gift expiry heads-ups and scheduled reports. With none set it never posts unprompted. `/setup` checks the bot can view the channel, send messages and embed links there before saving it, and every post checks again.
+
+**Default week.** Weeks start on Sunday. With no `week` given, `/add` and `/ingest` save into, and `/report week` shows, the server's default week: the current week, or last week for alliances that post stats after the weekly reset. Unset, it's the current week (for `/add` and `/ingest`, the operator's `DEFAULT_WEEK_START` comes first if set). Leaderboards (`/report versus`, `/report tech`, `/report leaderboard`) still default to the latest week that has data.
+
+Settings are stored in `GuildSettings (GuildId, TriviaChannelId, ReportChannelId, DefaultWeek, UpdatedAt)`; `DefaultWeek` is `current`, `last` or NULL.
 
 ### Operator (`/ops`)
 These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and the `/ops` group appears only in the private `CONTROL_GUILD_ID` server. If either variable is unset, `/ops` is disabled.
@@ -127,7 +134,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops backup` | Write a database backup now |
 | `/ops queue` | Live OCR queue: requests running and waiting per server, and how long the oldest has waited |
 | `/ops purges` | Servers that removed the bot and when their data will be deleted |
-| `/ops grant <server> <tier> <duration> <reason>` | Gift Alliance or Command to a server for 30 days, 90 days, 1 year or permanently |
+| `/ops grant <server> <tier> <duration> <reason> [notify]` | Gift Alliance or Command to a server for 30 days, 90 days, 1 year or permanently. `notify:True` posts a thank-you in the server's report channel (the reason isn't shown); if it can't (no report channel, or no permission), the reply says why and the gift still applies |
 | `/ops revoke <server> <reason> [entitlement]` | Revoke a server's active gifts (or one entitlement); paid subscriptions can't be revoked here |
 | `/ops extend <entitlement> <duration>` | Extend a gift, or make it permanent |
 | `/ops show <server>` | A server's plan, all its entitlements, this week's screenshots and recent changes |

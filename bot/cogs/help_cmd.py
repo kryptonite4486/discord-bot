@@ -24,6 +24,8 @@ Admin (server administrators only)
 Setup (Manage Server)
   /setup                 Show settings; trivia_channel: sets the trivia channel
                          (trivia only there; /add and /ingest refused there)
+                         report_channel: where the bot posts notices
+                         default_week: current or last week when none given
 
 Add / Ingest
   /add versus       Add Versus Points for a player
