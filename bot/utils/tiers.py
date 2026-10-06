@@ -417,7 +417,18 @@ def requires_feature(feature: str):
             return True
         raise FeatureLocked(feature)
 
+    predicate.feature = feature  # read by command_features (the /help 🔒 marks)
     return app_commands.check(predicate)
+
+
+def command_features(commands) -> dict[str, str]:
+    """{qualified name: feature} for the commands gated by requires_feature."""
+    return {
+        cmd.qualified_name: check.feature
+        for cmd in commands
+        for check in getattr(cmd, "checks", ())
+        if hasattr(check, "feature")
+    }
 
 
 class FeatureLocked(app_commands.CheckFailure):
