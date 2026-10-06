@@ -20,6 +20,7 @@ Admin (server administrators only)
   /admin duplicates      List player names stored under several spellings
   /admin rename-player   Move a player's rows to the correct spelling
   /data delete           Permanently delete this channel's (or server's) data
+  /data export           Download this channel's (or server's) data as CSV/JSON
 
 Setup (Manage Server)
   /setup                 Show settings; trivia_channel: sets the trivia channel

@@ -82,6 +82,7 @@ FEATURE_LABELS = {
     "name_tools": "Duplicate names",
     "multi_channel_reports": "Server-wide reports",
     "clean_charts": "Unwatermarked charts",
+    "export": "CSV/JSON export",
 }
 assert set(FEATURE_LABELS) == set(FEATURE_NAMES), "label every gated feature"
 assert all(len(label) <= LABEL_WIDTH for label in FEATURE_LABELS.values()), "labels must fit"

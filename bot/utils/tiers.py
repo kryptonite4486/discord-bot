@@ -32,6 +32,7 @@ FEATURE_NAMES = {
     "name_tools": "`/admin duplicates` and `/admin rename-player`",
     "multi_channel_reports": "reports covering more than one channel",
     "clean_charts": "charts without the Free-plan watermark",
+    "export": "CSV and JSON exports (`/data export`)",
 }
 
 
@@ -68,7 +69,9 @@ MID = TierPolicy(
     ocr_images_per_week=250,
     history_weeks=26,
     max_channels=3,
-    features=frozenset({"zip_batch", "advanced_reports", "name_tools", "clean_charts"}),
+    features=frozenset(
+        {"zip_batch", "advanced_reports", "name_tools", "clean_charts", "export"}
+    ),
     queue_priority=1,
 )
 FULL = TierPolicy(
