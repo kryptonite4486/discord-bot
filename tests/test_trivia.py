@@ -219,22 +219,22 @@ class TriviaDatabaseTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.db.trivia_leaderboard(guild_id=None)
         self.assertEqual([r["UserId"] for r in rows], ["1", "2", "3"])
         self.assertEqual(rows[1]["GuildName"], "Server B")
-        await self.db.set_trivia_settings("A", allow_global=False, announce_channel_id="55")
+        await self.db.set_trivia_settings("A", allow_global=False)
         rows = await self.db.trivia_leaderboard(guild_id=None)
         self.assertEqual([r["UserId"] for r in rows], ["2"])
 
     async def test_settings_defaults_and_announce_channels(self) -> None:
-        self.assertEqual(
-            await self.db.trivia_settings("A"), {"allow_global": True, "announce_channel_id": None}
-        )
-        await self.db.set_trivia_settings("A", allow_global=True, announce_channel_id="10")
-        await self.db.set_trivia_settings("B", allow_global=False, announce_channel_id="20")
-        await self.db.set_trivia_settings("C", allow_global=True, announce_channel_id=None)
+        self.assertEqual(await self.db.trivia_settings("A"), {"allow_global": True})
+        # Invitations go to each server's trivia channel, unless it opted out.
+        await self.db.set_trivia_channel("A", "10")
+        await self.db.set_trivia_channel("B", "20")
+        await self.db.set_trivia_settings("B", allow_global=False)
+        await self.db.set_trivia_channel("C", None)
         self.assertEqual(await self.db.trivia_announce_channels(), [("A", "10")])
 
     async def test_reset_and_purge_remove_trivia_data(self) -> None:
         await self.db.record_trivia_match("server", [_player("A", 1, 100), _player("B", 2, 100)])
-        await self.db.set_trivia_settings("A", allow_global=False, announce_channel_id=None)
+        await self.db.set_trivia_settings("A", allow_global=False)
         self.assertEqual(await self.db.guilds_with_data(), {"A", "B"})
         self.assertEqual(await self.db.delete_trivia_scores("B"), 1)
         self.assertEqual(await self.db.guilds_with_data(), {"A"})
@@ -412,7 +412,7 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(100, self.cog.games)
 
     async def test_cross_server_match_shares_questions_and_scoreboard(self) -> None:
-        await self.db.set_trivia_settings("2", allow_global=True, announce_channel_id="300")
+        await self.db.set_trivia_channel("2", "300")
         invite_channel = FakeChannel(300)
         self.channels[300] = invite_channel
 
@@ -458,7 +458,7 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
                          {("10", "Wolves"), ("20", "Bears"), ("21", "Bears")})
 
     async def test_cross_server_respects_opt_out_and_cooldown(self) -> None:
-        await self.db.set_trivia_settings("2", allow_global=False, announce_channel_id=None)
+        await self.db.set_trivia_settings("2", allow_global=False)
         game = await self._start(
             _interaction(10, self.guild_a, FakeChannel(100)),
             mode=SimpleNamespace(value="global"), seconds=5,

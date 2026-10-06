@@ -4,9 +4,10 @@
 **This server** mode it stays in that channel. With **Cross-server** it
 opens a lobby that channels in other servers can join, by `/trivia join`,
 `/trivia start mode:Cross-server`, or the Join button on the invitation the
-bot posts in servers that chose an announcement channel. Every joined
+bot posts in servers that set a trivia channel with /setup. Every joined
 channel then gets the same questions at the same time, and all answers go
-into one scoreboard that also totals points per server.
+into one scoreboard that also totals points per server. Where a server has a
+trivia channel, matches run only there (bot/utils/channel_rules.py).
 
 Answers are buttons, so the bot never needs to read messages (it has no
 Message Content intent). Matches live in memory and end if the bot
@@ -142,7 +143,7 @@ def lobby_embed(game: Game) -> discord.Embed:
         description=(
             f"{_settings_line(game)}\nHosted from **{_name(game.host_guild_name)}**. "
             f"First question {starts}.\n\nPlay from another server with "
-            "`/trivia join` in any channel there. Everyone in a joined channel "
+            "`/trivia join` in its trivia channel. Everyone in a joined channel "
             "can answer, and points also count toward their server's total."
         ),
         color=COLOR,
@@ -557,50 +558,34 @@ class Trivia(commands.Cog):
     @trivia.command(name="settings", description="Trivia options for this server (Manage Server)")
     @app_commands.describe(
         cross_server="Allow members to play cross-server matches from this server",
-        announce_channel="Post invitations to other servers' cross-server matches here",
-        stop_announcing="Stop posting invitations",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def settings(
-        self,
-        interaction: discord.Interaction,
-        cross_server: bool | None = None,
-        announce_channel: discord.TextChannel | None = None,
-        stop_announcing: bool = False,
+        self, interaction: discord.Interaction, cross_server: bool | None = None
     ) -> None:
         guild_id = guild_id_from_interaction(interaction)
-        current = await self.bot.db.trivia_settings(guild_id)
-        allow = current["allow_global"] if cross_server is None else cross_server
-        channel_id = current["announce_channel_id"]
-        if announce_channel is not None:
-            me = interaction.guild.me
-            perms = announce_channel.permissions_for(me)
-            if not (perms.view_channel and perms.send_messages and perms.embed_links):
-                await interaction.response.send_message(
-                    f"I can't post in {announce_channel.mention}. Give me View Channel, "
-                    "Send Messages and Embed Links there first.",
-                    ephemeral=True,
-                )
-                return
-            channel_id = str(announce_channel.id)
-        if stop_announcing:
-            channel_id = None
-        if (allow, channel_id) != (current["allow_global"], current["announce_channel_id"]):
-            await self.bot.db.set_trivia_settings(
-                guild_id, allow_global=allow, announce_channel_id=channel_id
-            )
+        current = (await self.bot.db.trivia_settings(guild_id))["allow_global"]
+        allow = current if cross_server is None else cross_server
+        if allow != current:
+            await self.bot.db.set_trivia_settings(guild_id, allow_global=allow)
             log.info(
-                "Trivia settings for guild %s by %s: cross_server=%s announce=%s",
-                guild_id, interaction.user.id, allow, channel_id,
+                "Trivia settings for guild %s by %s: cross_server=%s",
+                guild_id, interaction.user.id, allow,
             )
-        where = f"<#{channel_id}>" if channel_id else "nowhere (off)"
+        channel_id = (await self.bot.db.guild_settings(guild_id))["trivia_channel_id"]
+        where = (
+            f"<#{channel_id}>: matches run only there, and invitations to other "
+            "servers' cross-server matches are posted there"
+            if channel_id
+            else "not set, so matches can run anywhere and no invitations are posted"
+        )
         await interaction.response.send_message(
             "**Trivia settings**\n"
             f"• Cross-server play: **{'on' if allow else 'off'}**"
             + ("" if allow else " (members can't join or open cross-server matches, "
-               "and this server is left off the cross-server leaderboard)")
-            + f"\n• Invitations to other servers' matches: {where}"
-            + ("\n  (only sent while cross-server play is on)" if channel_id and not allow else ""),
+               "this server gets no invitations, and it's left off the "
+               "cross-server leaderboard)")
+            + f"\n• Trivia channel: {where}. Change it with `/setup`.",
             ephemeral=True,
         )
 

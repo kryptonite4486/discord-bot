@@ -101,6 +101,22 @@ docker compose up --build -d
 | `/admin rename-player` | Move a player's rows to the correct spelling |
 | `/data delete [scope]` | Permanently delete this channel's metrics, or the entire server's with `scope:Entire server`. Shows what will be deleted and asks for confirmation; a backup is taken first |
 
+### Setup (Manage Server)
+
+| Command | Description |
+|---------|-------------|
+| `/setup` | Show this server's settings |
+| `/setup trivia_channel:<#channel>` | Make that the trivia channel |
+| `/setup clear_trivia_channel:True` | Remove the trivia channel |
+
+**We recommend a dedicated trivia channel** (e.g. `#trivia`), so matches stay out of the channels that hold your alliance's stats. Once one is set:
+
+- `/trivia start` and `/trivia join` work only there (or in a thread inside it); elsewhere they reply privately with a pointer to it.
+- `/add` and `/ingest` are refused there, so stats are never added to the trivia channel. Reports still work, since they only read data.
+- Invitations to other servers' cross-server matches are posted there.
+
+With no trivia channel, trivia runs anywhere and nothing is restricted. Commands still appear in the `/` menu in every channel; the bot can't hide them per channel. Server admins can, under **Server Settings → Integrations → LastZ Assistant**: pick a command and add channel overrides. `/setup` is hidden from members without Manage Server and also checks the permission. Settings are stored in `GuildSettings (GuildId, TriviaChannelId, UpdatedAt)`.
+
 ### Operator (`/ops`)
 These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and the `/ops` group appears only in the private `CONTROL_GUILD_ID` server. If either variable is unset, `/ops` is disabled.
 
@@ -180,13 +196,13 @@ The planner is a separate static site (repo `territory-planner`, hosted on Cloud
 | `/trivia join` | Join the open cross-server match from this channel |
 | `/trivia stop` | Stop the match here. In a cross-server match only this channel leaves; the rest play on |
 | `/trivia leaderboard [scope]` | All-time totals for this server, or `scope:Cross-server` |
-| `/trivia settings [cross_server] [announce_channel] [stop_announcing]` | Server options (Manage Server); no options shows the current ones |
+| `/trivia settings [cross_server]` | Turn cross-server play on or off (Manage Server); no options shows the current settings |
 | `/trivia reset` | Delete this server's trivia scores, with confirmation (Administrator) |
 
 **Two ways to play, chosen by `mode`:**
 
 - **This server** (default): the match runs in the channel where it was started, 5 seconds after the command.
-- **Cross-server**: opens a lobby for 45 seconds. Other servers join from any channel with `/trivia join` (or `/trivia start mode:Cross-server`, which joins the open lobby instead of opening another), and servers that set an `announce_channel` get an invitation with a **Join** button there. Every joined channel then gets the same questions at the same moment, answers from all of them go into one scoreboard, and the results also total points per server. Only one lobby is open at a time, a match holds up to 20 channels, and each server can open a lobby once every 5 minutes so invitations can't be spammed.
+- **Cross-server**: opens a lobby for 45 seconds. Other servers join with `/trivia join` (or `/trivia start mode:Cross-server`, which joins the open lobby instead of opening another), from their trivia channel if they've set one with `/setup` or any channel if not. Servers with a trivia channel get an invitation with a **Join** button there. Every joined channel then gets the same questions at the same moment, answers from all of them go into one scoreboard, and the results also total points per server. Only one lobby is open at a time, a match holds up to 20 channels, and each server can open a lobby once every 5 minutes so invitations can't be spammed.
 
 Everyone in a joined channel can answer. Answers are buttons (A–D), so the bot still needs no Message Content intent; the first press counts and can't be changed, and the reply is visible only to the person who pressed. A correct answer scores 100 points plus up to 50 for speed, shrinking over the answer window. A question ends early once everyone who answered the previous question has answered this one, across every channel in the match. The first question always runs its full time, since nobody is known to be playing yet, and someone who skips a question isn't waited for on the next. Whoever started or joined the match in a channel, or anyone with Manage Messages there, can stop it. Matches live in memory: a restart ends them with a notice, and nothing is recorded for them.
 
@@ -240,7 +256,7 @@ When the bot is removed from a server (kicked, banned, or the server deleted), t
 
 Server admins can delete data immediately with `/data delete` (one channel, or the whole server).
 
-Trivia keeps totals per player per server in `TriviaScore (GuildId, UserId, Mode, DisplayName, GuildName, Points, Correct, Answered, Games, Wins)`, with `Mode` `server` or `global` (a cross-server player's points count for the server they played from), and per-server options in `TriviaSettings (GuildId, AllowGlobal, AnnounceChannelId)`. Both follow the same removal retention as metrics. `/trivia reset` deletes a server's trivia scores; `/data delete` doesn't touch them.
+Trivia keeps totals per player per server in `TriviaScore (GuildId, UserId, Mode, DisplayName, GuildName, Points, Correct, Answered, Games, Wins)`, with `Mode` `server` or `global` (a cross-server player's points count for the server they played from), and the cross-server switch in `TriviaSettings (GuildId, AllowGlobal)`; the trivia channel is in `GuildSettings` (see `/setup`). All three follow the same removal retention as metrics. `/trivia reset` deletes a server's trivia scores; `/data delete` doesn't touch them.
 
 Deleted data still exists in backups until they age out, at most `BACKUP_MAX_AGE_DAYS` (default 30) days after the deletion, while the bot is running. So with the defaults, a removed server's data is fully gone within about 60 days of the bot's removal (30 days' retention plus 30 days of backups), or 30 days after `/data delete`. Usage counters (`UsageLedger`) are not deleted; they hold only per-day counts, no player data.
 

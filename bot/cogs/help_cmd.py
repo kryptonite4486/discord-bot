@@ -21,6 +21,10 @@ Admin (server administrators only)
   /admin rename-player   Move a player's rows to the correct spelling
   /data delete           Permanently delete this channel's (or server's) data
 
+Setup (Manage Server)
+  /setup                 Show settings; trivia_channel: sets the trivia channel
+                         (trivia only there; /add and /ingest refused there)
+
 Add / Ingest
   /add versus       Add Versus Points for a player
   /add tech         Add Tech Contribution for a player
@@ -61,7 +65,7 @@ Trivia (multiple choice; answer with the buttons)
   /trivia join      Join the open cross-server match from this channel
   /trivia stop      Stop the match here (a cross-server match goes on elsewhere)
   /trivia leaderboard  All-time scores (scope:Cross-server for every server)
-  /trivia settings  Cross-server play on/off, invitation channel (Manage Server)
+  /trivia settings  Cross-server play on/off (Manage Server)
   /trivia reset     Delete this server's trivia scores (Administrator)
 
 Help

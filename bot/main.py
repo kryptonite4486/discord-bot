@@ -13,6 +13,7 @@ from bot import __version__
 from bot.config import Settings
 from bot.db import Database
 from bot.utils import setup_logging
+from bot.utils.channel_rules import enforce_channel_rules
 from bot.utils.command_sync import sync_commands
 from bot.utils.guild import reject_dm_interaction
 from bot.utils.tiers import FeatureLocked, Tiers
@@ -29,6 +30,7 @@ COGS = (
     "bot.cogs.planner",
     "bot.cogs.premium",
     "bot.cogs.reports",
+    "bot.cogs.server_setup",
     "bot.cogs.trivia",
 )
 
@@ -74,7 +76,10 @@ class LastZAssistant(commands.Bot):
         # only when they are not application commands; still reject DM slash use.
         if interaction.type is not discord.InteractionType.application_command:
             return True
-        return await reject_dm_interaction(interaction)
+        if not await reject_dm_interaction(interaction):
+            return False
+        # Per-server channel rules from /setup (e.g. trivia only in its channel).
+        return await enforce_channel_rules(self, interaction)
 
     async def setup_hook(self) -> None:
         await self.db.connect()

@@ -113,12 +113,19 @@ CREATE TABLE IF NOT EXISTS TriviaScore (
 
 CREATE INDEX IF NOT EXISTS idx_trivia_mode ON TriviaScore (Mode, Points);
 
--- Per-server trivia options. No row = defaults (cross-server play allowed,
--- no announcement channel).
+-- Per-server trivia options. No row = default (cross-server play allowed).
 CREATE TABLE IF NOT EXISTS TriviaSettings (
-    GuildId           TEXT PRIMARY KEY,
-    AllowGlobal       INTEGER NOT NULL DEFAULT 1,
-    AnnounceChannelId TEXT
+    GuildId     TEXT PRIMARY KEY,
+    AllowGlobal INTEGER NOT NULL DEFAULT 1
+);
+
+-- Per-server options set with /setup. No row = defaults. TriviaChannelId:
+-- the only channel trivia runs in (and where cross-server invitations go);
+-- NULL = trivia anywhere.
+CREATE TABLE IF NOT EXISTS GuildSettings (
+    GuildId         TEXT PRIMARY KEY,
+    TriviaChannelId TEXT,
+    UpdatedAt       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -150,6 +157,7 @@ class Database:
         await self._migrate_add_guild_id()
         await self._migrate_add_channel_id()
         await self._conn.executescript(SCHEMA_SQL)
+        await self._migrate_trivia_announce_channel()
         await self._conn.commit()
         log.info("Database ready at %s", self.path)
 
@@ -264,6 +272,28 @@ class Database:
         await self.conn.execute("DROP INDEX IF EXISTS idx_weekly_week")
         await self.conn.commit()
         log.info("WeeklyMetrics ChannelId migration complete")
+
+    async def _migrate_trivia_announce_channel(self) -> None:
+        """Move TriviaSettings.AnnounceChannelId into GuildSettings.TriviaChannelId.
+
+        The first trivia build had a separate invitation channel; /setup's
+        trivia channel now does that job.
+        """
+        if "AnnounceChannelId" not in await self._table_columns("TriviaSettings"):
+            return
+        cur = await self.conn.execute(
+            """
+            INSERT INTO GuildSettings (GuildId, TriviaChannelId)
+            SELECT GuildId, AnnounceChannelId FROM TriviaSettings
+            WHERE COALESCE(AnnounceChannelId, '') != ''
+            ON CONFLICT(GuildId) DO NOTHING
+            """
+        )
+        await self.conn.execute("ALTER TABLE TriviaSettings DROP COLUMN AnnounceChannelId")
+        log.info(
+            "Moved %d trivia announcement channel(s) to GuildSettings.TriviaChannelId",
+            cur.rowcount,
+        )
 
     @staticmethod
     def _channel_scope_sql(
@@ -1059,7 +1089,10 @@ class Database:
 
     async def guilds_with_data(self) -> set[str]:
         async with self.conn.execute(
-            "SELECT GuildId FROM WeeklyMetrics UNION SELECT GuildId FROM TriviaScore"
+            """
+            SELECT GuildId FROM WeeklyMetrics UNION SELECT GuildId FROM TriviaScore
+            UNION SELECT GuildId FROM TriviaSettings UNION SELECT GuildId FROM GuildSettings
+            """
         ) as cursor:
             return {str(r["GuildId"]) for r in await cursor.fetchall()}
 
@@ -1128,7 +1161,7 @@ class Database:
             cursor = await self.conn.execute(
                 "DELETE FROM WeeklyMetrics WHERE GuildId = ?", (guild_id,)
             )
-            for table in ("TriviaScore", "TriviaSettings"):
+            for table in ("TriviaScore", "TriviaSettings", "GuildSettings"):
                 await self.conn.execute(
                     f"DELETE FROM {table} WHERE GuildId = ?", (guild_id,)
                 )
@@ -1271,47 +1304,61 @@ class Database:
             (actor_id, action, guild_id, detail),
         )
 
-    # --- Trivia --------------------------------------------------------------
+    # --- Server settings (/setup) -------------------------------------------
 
-    async def trivia_settings(self, guild_id: str) -> dict[str, Any]:
-        """{"allow_global": bool, "announce_channel_id": str | None} (defaults if unset)."""
+    async def guild_settings(self, guild_id: str) -> dict[str, Any]:
+        """{"trivia_channel_id": str | None} (defaults if unset)."""
         async with self.conn.execute(
-            "SELECT AllowGlobal, AnnounceChannelId FROM TriviaSettings WHERE GuildId = ?",
-            (guild_id,),
+            "SELECT TriviaChannelId FROM GuildSettings WHERE GuildId = ?", (guild_id,)
         ) as cursor:
             row = await cursor.fetchone()
-        if row is None:
-            return {"allow_global": True, "announce_channel_id": None}
-        return {
-            "allow_global": bool(row["AllowGlobal"]),
-            "announce_channel_id": row["AnnounceChannelId"] or None,
-        }
+        return {"trivia_channel_id": (row["TriviaChannelId"] or None) if row else None}
 
-    async def set_trivia_settings(
-        self, guild_id: str, *, allow_global: bool, announce_channel_id: str | None
-    ) -> None:
+    async def set_trivia_channel(self, guild_id: str, channel_id: str | None) -> None:
         async with self._write_lock:
             await self.conn.execute(
                 """
-                INSERT INTO TriviaSettings (GuildId, AllowGlobal, AnnounceChannelId)
-                VALUES (?, ?, ?)
+                INSERT INTO GuildSettings (GuildId, TriviaChannelId, UpdatedAt)
+                VALUES (?, ?, datetime('now'))
                 ON CONFLICT(GuildId) DO UPDATE SET
-                    AllowGlobal = excluded.AllowGlobal,
-                    AnnounceChannelId = excluded.AnnounceChannelId
+                    TriviaChannelId = excluded.TriviaChannelId,
+                    UpdatedAt = datetime('now')
                 """,
-                (guild_id, int(allow_global), announce_channel_id),
+                (guild_id, channel_id),
+            )
+            await self.conn.commit()
+
+    # --- Trivia --------------------------------------------------------------
+
+    async def trivia_settings(self, guild_id: str) -> dict[str, Any]:
+        """{"allow_global": bool} (default if unset)."""
+        async with self.conn.execute(
+            "SELECT AllowGlobal FROM TriviaSettings WHERE GuildId = ?", (guild_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return {"allow_global": bool(row["AllowGlobal"]) if row else True}
+
+    async def set_trivia_settings(self, guild_id: str, *, allow_global: bool) -> None:
+        async with self._write_lock:
+            await self.conn.execute(
+                """
+                INSERT INTO TriviaSettings (GuildId, AllowGlobal) VALUES (?, ?)
+                ON CONFLICT(GuildId) DO UPDATE SET AllowGlobal = excluded.AllowGlobal
+                """,
+                (guild_id, int(allow_global)),
             )
             await self.conn.commit()
 
     async def trivia_announce_channels(self) -> list[tuple[str, str]]:
-        """(guild_id, channel_id) of servers that want cross-server match announcements."""
+        """(guild_id, trivia channel) of servers that get cross-server match invitations."""
         async with self.conn.execute(
             """
-            SELECT GuildId, AnnounceChannelId FROM TriviaSettings
-            WHERE AllowGlobal = 1 AND COALESCE(AnnounceChannelId, '') != ''
+            SELECT g.GuildId, g.TriviaChannelId FROM GuildSettings g
+            LEFT JOIN TriviaSettings t ON t.GuildId = g.GuildId
+            WHERE COALESCE(g.TriviaChannelId, '') != '' AND COALESCE(t.AllowGlobal, 1) = 1
             """
         ) as cursor:
-            return [(str(r["GuildId"]), str(r["AnnounceChannelId"])) async for r in cursor]
+            return [(str(r["GuildId"]), str(r["TriviaChannelId"])) async for r in cursor]
 
     async def record_trivia_match(self, mode: str, players: Sequence[dict[str, Any]]) -> None:
         """Add one finished match to each player's totals.
