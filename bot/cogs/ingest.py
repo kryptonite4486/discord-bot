@@ -17,6 +17,7 @@ from discord.ext import commands
 from bot.config import DATASET_KINDS, resolve_metric
 from bot.ocr import VisionOCR, extract_metrics_from_image
 from bot.ocr.vision import VisionOCRError
+from bot.utils.abuse import ensure_ocr_allowed
 from bot.utils.archive import (
     MAX_ZIP_IMAGES,
     ArchiveError,
@@ -524,6 +525,8 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if not await ensure_channel(interaction):
             return
+        if not await ensure_ocr_allowed(interaction, len(images)):
+            return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
@@ -578,6 +581,9 @@ class Ingest(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if not await ensure_channel(interaction):
             return
+        # Refuse before downloading if this person can't start OCR at all.
+        if not await ensure_ocr_allowed(interaction, 1, start=False):
+            return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
         kind = dataset.value
@@ -591,6 +597,8 @@ class Ingest(commands.Cog):
                 f"Nothing to process from `{archive.filename}`.\n{detail}",
                 ephemeral=True,
             )
+            return
+        if not await ensure_ocr_allowed(interaction, len(sources)):
             return
 
         await interaction.followup.send(
@@ -655,6 +663,9 @@ class Ingest(commands.Cog):
         timeout_minutes: app_commands.Range[int, 1, 15] = 10,
     ) -> None:
         if not await ensure_channel(interaction):
+            return
+        # Refuse before arming if this person can't start OCR at all.
+        if not await ensure_ocr_allowed(interaction, 1, start=False):
             return
         guild_id = guild_id_from_interaction(interaction)
         channel_id = channel_id_from_interaction(interaction)
@@ -806,6 +817,8 @@ class Ingest(commands.Cog):
                 f"No images received — batch cancelled.{reason}",
                 ephemeral=True,
             )
+            return
+        if not await ensure_ocr_allowed(interaction, len(collected)):
             return
 
         label = (

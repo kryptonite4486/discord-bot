@@ -51,6 +51,11 @@
           <td>To provide paid features, and to keep the free trial to one per server. We never see payment details: Discord handles payments.</td>
         </tr>
         <tr>
+          <td><strong>Free-plan screenshot use</strong>: for servers on the Free plan, the Discord user ID of the server's owner and of each person who sends screenshots for reading, with the server ID and the first and latest dates they did</td>
+          <td>Discord, when someone runs a screenshot command</td>
+          <td>To stop one person using the free allowance in many servers at once. Nothing else about the person is kept.</td>
+        </tr>
+        <tr>
           <td><strong>Operational logs</strong>: commands run, errors, and processing details. These can include the Discord username and ID of the person who ran an admin command, player names, and uploaded file names.</td>
           <td>The bot, as it works</td>
           <td>To fix problems and investigate misuse</td>
@@ -60,7 +65,7 @@
 
     <p><strong>Screenshots aren't kept.</strong> Images and zip files you upload are downloaded, read by a vision model running on our own hardware (not a third-party AI service), and discarded once the stats are extracted. They aren't used to train any model.</p>
 
-    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details, apart from the trivia scores of people who choose to play trivia. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
+    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details, apart from the trivia scores of people who choose to play trivia and the user IDs described under “Free-plan screenshot use”. To keep screenshot reading quick for everyone, the bot also counts how many screenshots each person sends in each server over the last few minutes; those counts are kept only in memory and are gone within minutes, or when the bot restarts. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
 
     <h2>About player names</h2>
     <p>Player names come from the game and are uploaded by alliance members, usually the alliance's leaders. That means the bot can hold names of players who have never used it. If your in-game name is stored and you want it removed, ask the server's admins, who can delete it with <code>/data delete</code>, or contact us with the server and name, and we'll remove it.</p>
@@ -81,6 +86,7 @@
         <tr><td>Usage counts</td><td>Kept, because they contain no player data.</td></tr>
         <tr><td>Subscription records</td><td>Kept, including after <code>/data delete</code> or the bot's removal, as a record of what each server was entitled to. They contain no player data.</td></tr>
         <tr><td>Free trial record</td><td>The server's ID and the date its free trial started are kept even after <code>/data delete</code> or the bot's removal, so each server gets only one trial.</td></tr>
+        <tr><td>Free-plan screenshot use</td><td>Deleted <strong>30 days</strong> after the person last sent screenshots in that server, and straight away with the server's data (<code>/data delete</code> for the whole server, or the deletion after the bot is removed).</td></tr>
         <tr><td>Operational logs</td><td>Kept in size-limited files that are overwritten as new entries are written.</td></tr>
       </table>
     </div>
@@ -92,7 +98,7 @@
     <ul>
       <li>Server admins can delete their server's data at any time with <code>/data delete</code>, for one channel or the whole server.</li>
       <li>Server admins can delete their server's trivia scores at any time with <code>/trivia reset</code>.</li>
-      <li>Anyone can contact us to ask what's stored about an in-game name or their trivia scores, or to have it corrected or deleted.</li>
+      <li>Anyone can contact us to ask what's stored about an in-game name, their trivia scores or their Discord user ID, or to have it corrected or deleted.</li>
       <li>Depending on where you live (for example in the EU or UK), you may have further rights, such as to object to processing or to complain to your data protection authority. We rely on our legitimate interest in providing the features a server's admins asked for.</li>
     </ul>
 

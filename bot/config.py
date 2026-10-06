@@ -18,6 +18,12 @@ def _optional_int(name: str) -> int | None:
     return int(raw)
 
 
+def _int_or(name: str, default: int) -> int:
+    """A non-negative int; unset means ``default`` (0 is kept: it turns a limit off)."""
+    value = _optional_int(name)
+    return default if value is None else max(0, value)
+
+
 def _int_set(name: str) -> frozenset[int]:
     """Comma- or space-separated Discord IDs."""
     raw = os.getenv(name, "").replace(",", " ").split()
@@ -86,6 +92,13 @@ class Settings:
     tiers_enforced: bool
     allow_unmounted_data: bool
     planner_url: str = DEFAULT_PLANNER_URL
+    # Per-user OCR ingest limit, per server (bot/utils/abuse.py). 0 turns a cap off.
+    ingest_rate_window_minutes: int = 10
+    ingest_rate_requests: int = 6
+    ingest_rate_images: int = 60
+    ingest_rate_admin_multiplier: int = 3
+    # Free servers one person (owner or OCR user) can use OCR in. 0: no cap.
+    free_servers_per_owner: int = 3
     # None: the question bank bundled with the bot.
     trivia_questions_path: Path | None = None
 
@@ -137,6 +150,11 @@ class Settings:
             planner_url=(
                 os.getenv("PLANNER_URL", "").strip().rstrip("/") or DEFAULT_PLANNER_URL
             ),
+            ingest_rate_window_minutes=max(1, _optional_int("INGEST_RATE_WINDOW_MINUTES") or 10),
+            ingest_rate_requests=_int_or("INGEST_RATE_REQUESTS", 6),
+            ingest_rate_images=_int_or("INGEST_RATE_IMAGES", 60),
+            ingest_rate_admin_multiplier=max(1, _optional_int("INGEST_RATE_ADMIN_MULTIPLIER") or 3),
+            free_servers_per_owner=_int_or("FREE_SERVERS_PER_OWNER", 3),
             trivia_questions_path=(
                 Path(os.environ["TRIVIA_QUESTIONS_PATH"])
                 if os.getenv("TRIVIA_QUESTIONS_PATH", "").strip()

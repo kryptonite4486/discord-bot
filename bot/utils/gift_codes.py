@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import time
-from collections import deque
+
+from bot.utils.rate_limit import SlidingWindowLimiter
 
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32
 CODE_LENGTH = 16
@@ -50,33 +50,15 @@ def code_hint(normalized: str) -> str:
     return normalized[-GROUP:]
 
 
-class AttemptLimiter:
+class AttemptLimiter(SlidingWindowLimiter):
     """Allows each user ``max_failures`` failed attempts per ``window`` seconds."""
 
     def __init__(self, max_failures: int = 5, window: float = 900.0) -> None:
-        self.max_failures = max_failures
-        self.window = window
-        self._failures: dict[int, deque[float]] = {}
+        super().__init__(max_failures, window)
 
-    def _recent(self, user_id: int, now: float) -> deque[float]:
-        times = self._failures.get(user_id)
-        if times is None:
-            return deque()
-        while times and now - times[0] >= self.window:
-            times.popleft()
-        if not times:
-            self._failures.pop(user_id, None)
-        return times
-
-    def retry_after(self, user_id: int, now: float | None = None) -> float:
-        """Seconds until the user may try again; 0 if they may now."""
-        now = time.monotonic() if now is None else now
-        times = self._recent(user_id, now)
-        if len(times) < self.max_failures:
-            return 0.0
-        return self.window - (now - times[0])
+    @property
+    def max_failures(self) -> int:
+        return int(self.limit)
 
     def record_failure(self, user_id: int, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
-        self._recent(user_id, now)
-        self._failures.setdefault(user_id, deque()).append(now)
+        self.record(user_id, now=now)

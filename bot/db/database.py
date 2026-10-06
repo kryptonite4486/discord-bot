@@ -123,6 +123,22 @@ CREATE TABLE IF NOT EXISTS TrialClaim (
     ClaimedAt TEXT NOT NULL
 );
 
+-- Abuse control (bot/utils/abuse.py): which people use OCR in which Free
+-- servers, so one person can't farm the Free quota across many servers.
+-- One row per person, role and server: the Discord user ID of the server's
+-- owner ('owner') and of whoever ran the OCR command ('runner'). Nothing
+-- else about them. Rows unused for FREE_LINK_DAYS are deleted, and a
+-- server's rows go with /data delete (whole server) and the removal purge.
+CREATE TABLE IF NOT EXISTS FreeOcrLink (
+    UserId  TEXT NOT NULL,
+    GuildId TEXT NOT NULL,
+    Role    TEXT NOT NULL,  -- 'owner' | 'runner'
+    FirstAt TEXT NOT NULL,
+    LastAt  TEXT NOT NULL,
+    PRIMARY KEY (UserId, GuildId, Role)
+);
+CREATE INDEX IF NOT EXISTS idx_free_ocr_guild ON FreeOcrLink (GuildId);
+
 -- Gift expiry reminders already sent (bot/utils/gift_reminders.py), one row
 -- per entitlement, stage and end date. Keyed on EndsAt so extending an
 -- entitlement re-arms its reminders.
@@ -1279,6 +1295,7 @@ class Database:
         """Delete a server's metrics (one channel, or all of them); return rows removed.
 
         Usage counters are kept: they hold only counts per day, no player data.
+        Deleting the whole server also drops its FreeOcrLink rows.
         """
         if not guild_id:
             raise ValueError("GuildId cannot be empty")
@@ -1289,6 +1306,10 @@ class Database:
             params = (guild_id, channel_id)
         async with self._write_lock:
             cursor = await self.conn.execute(sql, params)
+            if channel_id is None:
+                await self.conn.execute(
+                    "DELETE FROM FreeOcrLink WHERE GuildId = ?", (guild_id,)
+                )
             await self.conn.commit()
         return cursor.rowcount
 
@@ -1368,7 +1389,7 @@ class Database:
             cursor = await self.conn.execute(
                 "DELETE FROM WeeklyMetrics WHERE GuildId = ?", (guild_id,)
             )
-            for table in ("TriviaScore", "TriviaSettings", "GuildSettings"):
+            for table in ("TriviaScore", "TriviaSettings", "GuildSettings", "FreeOcrLink"):
                 await self.conn.execute(
                     f"DELETE FROM {table} WHERE GuildId = ?", (guild_id,)
                 )
@@ -1387,6 +1408,44 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return float(row["total"])
+
+    # --- Abuse control: people using OCR in Free servers ---------------------
+
+    async def free_ocr_links(
+        self, since: str, *, user_ids: Sequence[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """FreeOcrLink rows used since ``since``, optionally for some users only."""
+        sql = "SELECT * FROM FreeOcrLink WHERE LastAt >= ?"
+        params: list[Any] = [since]
+        if user_ids is not None:
+            if not user_ids:
+                return []
+            sql += f" AND UserId IN ({', '.join('?' for _ in user_ids)})"
+            params.extend(user_ids)
+        async with self.conn.execute(sql + " ORDER BY FirstAt, GuildId", params) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def record_free_ocr_links(
+        self, guild_id: str, links: Sequence[tuple[str, str]], now: str, *, expire_before: str
+    ) -> None:
+        """Note that these (user ID, role) pairs used OCR in a Free server at ``now``.
+
+        Rows last used before ``expire_before`` are deleted first, so an
+        expired link starts over rather than keeping its old FirstAt.
+        """
+        async with self._write_lock:
+            await self.conn.execute(
+                "DELETE FROM FreeOcrLink WHERE LastAt < ?", (expire_before,)
+            )
+            await self.conn.executemany(
+                """
+                INSERT INTO FreeOcrLink (UserId, GuildId, Role, FirstAt, LastAt)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(UserId, GuildId, Role) DO UPDATE SET LastAt = excluded.LastAt
+                """,
+                [(user_id, guild_id, role, now, now) for user_id, role in links],
+            )
+            await self.conn.commit()
 
     # --- Entitlements (subscriptions, gifts, trials) ------------------------
 
