@@ -70,15 +70,7 @@ class _Case(unittest.IsolatedAsyncioTestCase):
         )
 
     async def set_report_channel(self, channel_id: str | None) -> None:
-        # Stands in for /setup's report channel (separate branch).
-        if "ReportChannelId" not in await self.db._table_columns("GuildSettings"):
-            await self.db.conn.execute("ALTER TABLE GuildSettings ADD COLUMN ReportChannelId TEXT")
-        await self.db.conn.execute(
-            "INSERT INTO GuildSettings (GuildId, ReportChannelId) VALUES (?, ?) "
-            "ON CONFLICT(GuildId) DO UPDATE SET ReportChannelId = excluded.ReportChannelId",
-            (GUILD, channel_id),
-        )
-        await self.db.conn.commit()
+        await self.db.set_report_channel(GUILD, channel_id)
 
     def dm_text(self) -> str:
         return "\n".join(c.args[0] for c in self.operator.send.await_args_list)
@@ -261,8 +253,7 @@ class ServerHeadsUpTests(_Case):
 
 
 class ReportChannelHelperTests(_Case):
-    async def test_none_before_setup_adds_the_column(self) -> None:
-        self.assertNotIn("ReportChannelId", await self.db._table_columns("GuildSettings"))
+    async def test_none_when_unset(self) -> None:
         self.assertIsNone(await self.db.report_channel_id(GUILD))
 
     async def test_reads_configured_channel(self) -> None:
