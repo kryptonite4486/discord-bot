@@ -1,5 +1,5 @@
-"""Operator-only commands: reload, sync, backup, queue, purges, usage, and
-gifting plans (grant, revoke, extend, show, list, and gift codes).
+"""Operator-only commands: reload, sync, backup, queue, purges, usage,
+capacity, and gifting plans (grant, revoke, extend, show, list, and gift codes).
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -19,19 +19,29 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.db.database import USAGE_KINDS
 from bot.utils.backup import create_backup
+from bot.utils.capacity import (
+    WEEKDAYS,
+    CapacityEstimate,
+    UsageStats,
+    estimate_capacity,
+    summarize_usage,
+)
 from bot.utils.command_sync import sync_commands, sync_control_guild
 from bot.utils.fair_queue import LEVEL_NAMES, GuildQueueState
 from bot.utils.gift_codes import code_hint, generate_code, hash_code, normalize_code
 from bot.utils.report_channel import ReportChannelUnavailable, send_to_report_channel
 from bot.utils.retention import RemovedServer, removed_servers
-from bot.utils.tiers import TIERS, status_from_entitlements
+from bot.utils.tiers import FREE, FULL, MID, TIERS, status_from_entitlements
 
 log = logging.getLogger(__name__)
 
 NOT_OPERATOR_MESSAGE = "Only the bot operator can use this command."
 # Keeps /ops usage and /ops queue under Discord's 2,000-character limit.
 MAX_USAGE_ROWS = 20
+# /ops capacity carries more sections, so it lists fewer servers.
+MAX_CAPACITY_ROWS = 10
 
 # Cog reload alone does not refresh already-imported helpers. Reload deps in
 # dependency order (leaves first) so formatters pick up a fresh format_value.
@@ -185,6 +195,104 @@ def format_usage_report(
                 + ", ".join(f"{d[5:]} {int(n)}" for d, n in images_by_day)
             )
     lines.append("_Wait = average time a batch queued behind other servers' batches._")
+    return "\n".join(lines)
+
+
+def format_capacity_report(
+    stats: UsageStats,
+    by_guild: dict[str, dict[str, float]],
+    names: dict[str, str],
+    estimate: CapacityEstimate | None,
+    *,
+    seconds_source: str,
+    share_source: str,
+) -> str:
+    """Markdown capacity report: measured OCR cost and demand, then the estimate."""
+    lines = [f"**OCR capacity, last {stats.days} day(s)** (UTC days)"]
+    if stats.images:
+        fail = stats.failure_rate or 0.0
+        lines.append(
+            f"Images **{int(stats.images)}** in **{int(stats.batches)}** batch(es) · "
+            f"OCR **{stats.seconds_per_image:.1f}s/image** · "
+            f"failed **{int(stats.failed)}** ({fail:.1%})"
+        )
+        if stats.avg_wait is not None:
+            wait = f"Queue wait: average **{_duration(stats.avg_wait)}** per batch"
+            if stats.peak_wait:
+                day, secs = stats.peak_wait
+                wait += f", worst day {day} averaged **{_duration(secs)}**"
+            lines.append(wait + ".")
+
+        server_rows = [
+            (names.get(gid, gid), u)
+            for gid, u in sorted(
+                by_guild.items(), key=lambda kv: kv[1].get("ocr_images", 0), reverse=True
+            )
+            if u.get("ocr_images")
+        ]
+        lines += [
+            "```",
+            f"{'Server':<22} {'Images':>6} {'s/img':>6} {'Fail%':>6}",
+            *(
+                f"{label[:22]:<22} {int(u['ocr_images']):>6} "
+                f"{u.get('ocr_seconds', 0.0) / u['ocr_images']:>6.1f} "
+                f"{u.get('ocr_failed', 0.0) / u['ocr_images']:>6.1%}"
+                for label, u in server_rows[:MAX_CAPACITY_ROWS]
+            ),
+            *(
+                [f"…and {len(server_rows) - MAX_CAPACITY_ROWS} more server(s)"]
+                if len(server_rows) > MAX_CAPACITY_ROWS
+                else []
+            ),
+            "",
+            "Average images per weekday:",
+            "  ".join(f"{d} {n:.0f}" for d, n in zip(WEEKDAYS, stats.weekday_avg)),
+            "```",
+        ]
+        if stats.peak_day_share is not None:
+            lines.append(
+                f"Peak weekday: **{stats.peak_weekday}**, "
+                f"**{stats.peak_day_share:.0%}** of an average week's images."
+            )
+        if stats.busiest_days:
+            lines.append(
+                "Busiest days: "
+                + ", ".join(
+                    f"{d} {int(n)}" + (f" (wait {_duration(w)})" if w is not None else "")
+                    for d, n, w in stats.busiest_days
+                )
+            )
+    else:
+        lines.append("No OCR usage recorded in this window.")
+
+    if estimate is None:
+        lines.append(
+            "No estimate: no OCR seconds measured. Pass `seconds_per_image` "
+            "(from `scripts/benchmark_ocr.py`) to estimate anyway."
+        )
+        return "\n".join(lines)
+
+    e = estimate
+    lines += [
+        "",
+        f"**Estimate** ({e.seconds_per_image:.1f}s/image {seconds_source}, "
+        f"{e.slots} slot(s), peak day {e.peak_day_share:.0%} of the week {share_source}, "
+        f"{e.utilization:.0%} utilization)",
+        f"One slot, flat out: **{e.images_per_slot_week:,.0f}** images/week. "
+        f"Usable: **{e.usable_images_per_day:,.0f}** images on the peak day, "
+        f"so **{e.usable_images_per_week:,.0f}** images/week with this weekly pattern.",
+    ]
+    if stats.busiest_days:
+        day, n, _ = stats.busiest_days[0]
+        busy = n * e.seconds_per_image / (e.slots * 86_400)
+        lines.append(f"Busiest day so far ({day}) kept the slots **{busy:.0%}** busy.")
+    lines.append(
+        "Servers that fit, each using its full quota: "
+        + " · ".join(
+            f"{name} ({quota:,}/wk) **{fit:,}**"
+            for name, (quota, fit) in e.servers_by_tier.items()
+        )
+    )
     return "\n".join(lines)
 
 
@@ -829,13 +937,69 @@ class Ops(commands.Cog):
             format_usage_report(days, by_guild, by_day, names), ephemeral=True
         )
 
+    @ops.command(
+        name="capacity",
+        description="OCR cost and demand from the usage ledger, and how many servers fit",
+    )
+    @app_commands.describe(
+        days="How many days back, including today (default 28; whole weeks read best)",
+        utilization="Percent of each day the OCR slots can usefully be busy (default 70)",
+        seconds_per_image="Use this OCR time instead of the measured one, e.g. from scripts/benchmark_ocr.py",
+    )
+    async def capacity(
+        self,
+        interaction: discord.Interaction,
+        days: app_commands.Range[int, 7, 90] = 28,
+        utilization: app_commands.Range[int, 10, 100] = 70,
+        seconds_per_image: app_commands.Range[float, 0.1, 600.0] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        today = datetime.now(timezone.utc).date()
+        first = today - timedelta(days=days - 1)
+        since = first.isoformat()
+        daily: dict[str, dict[str, float]] = {}
+        for kind in USAGE_KINDS:
+            for day, amount in await self.bot.db.usage_by_day(since, kind):
+                daily.setdefault(day, {})[kind] = amount
+        stats = summarize_usage(daily, first, today)
+        by_guild = await self.bot.db.usage_by_guild(since)
+        names = {str(g.id): g.name for g in self.bot.guilds}
+
+        secs, secs_source = stats.seconds_per_image, "measured"
+        if seconds_per_image is not None:
+            secs, secs_source = seconds_per_image, "given"
+        share, share_source = stats.peak_day_share, "measured"
+        if share is None:
+            # No demand pattern yet: assume the worst, a whole week in one day.
+            share, share_source = 1.0, "assumed"
+        estimate = None
+        if secs:
+            estimate = estimate_capacity(
+                seconds_per_image=secs,
+                slots=self.bot.settings.ocr_max_concurrency,
+                peak_day_share=share,
+                quotas={t.name: t.ocr_images_per_week for t in (FREE, MID, FULL)},
+                utilization=utilization / 100,
+            )
+        await interaction.followup.send(
+            format_capacity_report(
+                stats,
+                by_guild,
+                names,
+                estimate,
+                seconds_source=secs_source,
+                share_source=share_source,
+            ),
+            ephemeral=True,
+        )
+
 
 async def setup(bot: commands.Bot) -> None:
     s = bot.settings
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup, queue, purges, usage) are disabled"
+            "(/ops reload, sync, backup, queue, purges, usage, capacity) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

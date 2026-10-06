@@ -143,6 +143,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops code list [include_inactive]` | Codes by number and last four characters, with uses and status |
 | `/ops code revoke <code_id> <reason> [revoke_redeemed]` | Stop a code being redeemed; `revoke_redeemed` also revokes the plans servers already got from it |
 | `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
+| `/ops capacity [days] [utilization] [seconds_per_image]` | OCR capacity from the usage ledger (default 28 days): seconds per image overall and per server, images per weekday, busiest days, queue wait, failure rate, and how many Free, Alliance and Command servers at full quota fit at the peak day. `scripts/benchmark_ocr.py` times the OCR on the sample screenshots offline. See `docs/monetization-plan.md` §2 item 14 |
 
 ### Ingestion
 | Command | Description |
