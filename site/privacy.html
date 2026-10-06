@@ -17,7 +17,7 @@
   </header>
   <main>
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated 5 October 2026</p>
+    <p class="updated">Last updated 6 October 2026</p>
 
     <p>This policy explains what the LastZ Assistant Discord bot (“the bot”) stores, why, for how long, and how to get it deleted. LastZ Assistant (“we”, “us”) runs the bot. Contact us at <a href="mailto:lastzassistant@gmail.com">lastzassistant@gmail.com</a>.</p>
 
@@ -34,6 +34,11 @@
           <td><strong>Discord server and channel IDs</strong></td>
           <td>Discord, with each command</td>
           <td>To keep each server's and channel's data separate</td>
+        </tr>
+        <tr>
+          <td><strong>Trivia scores</strong>: for each person who answers a trivia question, their Discord user ID, display name and server name, with their points, answers, games and wins</td>
+          <td>Discord, when that person presses an answer button</td>
+          <td>To show match results and trivia leaderboards</td>
         </tr>
         <tr>
           <td><strong>Usage counts</strong>: per server per day, the number of screenshots processed, failures, and processing and waiting time</td>
@@ -55,13 +60,13 @@
 
     <p><strong>Screenshots aren't kept.</strong> Images and zip files you upload are downloaded, read by a vision model running on our own hardware (not a third-party AI service), and discarded once the stats are extracted. They aren't used to train any model.</p>
 
-    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
+    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details, apart from the trivia scores of people who choose to play trivia. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
 
     <h2>About player names</h2>
     <p>Player names come from the game and are uploaded by alliance members, usually the alliance's leaders. That means the bot can hold names of players who have never used it. If your in-game name is stored and you want it removed, ask the server's admins, who can delete it with <code>/data delete</code>, or contact us with the server and name, and we'll remove it.</p>
 
     <h2>How the data is used</h2>
-    <p>Data is used only to provide the bot's features to the server it was added in. Each server's data is kept separate and is never shown to another server. We don't sell data, use it for advertising, or share it with anyone, except where the law requires us to.</p>
+    <p>Data is used only to provide the bot's features to the server it was added in. Each server's data is kept separate and is never shown to another server, with one exception: in a <strong>cross-server trivia match</strong>, which members choose to join, players' display names, scores and server names are shown to the other servers in that match and on the cross-server trivia leaderboard. Server admins can turn cross-server trivia off with <code>/trivia settings</code>, which also removes the server from that leaderboard. We don't sell data, use it for advertising, or share it with anyone, except where the law requires us to.</p>
 
     <h2>How long it's kept</h2>
     <div class="table-wrap">
@@ -69,6 +74,7 @@
         <tr><th>Situation</th><th>What happens</th></tr>
         <tr><td>The bot is in your server</td><td>Your server's data is kept so reports can show history.</td></tr>
         <tr><td>A server admin runs <code>/data delete</code></td><td>That channel's or the whole server's data is deleted immediately.</td></tr>
+        <tr><td>A server admin runs <code>/trivia reset</code></td><td>The server's trivia scores are deleted immediately.</td></tr>
         <tr><td>The bot is removed from your server</td><td>Data is kept for <strong>30 days</strong>, then deleted. Adding the bot back within 30 days keeps everything, so removing it by accident loses nothing.</td></tr>
         <tr><td>The bot is removed, but the server has an active subscription</td><td>Data is kept while the subscription is active, then for 30 days after it ends.</td></tr>
         <tr><td>Backups</td><td>Kept for at most <strong>30 days</strong>, so deleted data is gone from backups within 30 days of being deleted.</td></tr>
@@ -83,7 +89,8 @@
     <h2>Your choices and rights</h2>
     <ul>
       <li>Server admins can delete their server's data at any time with <code>/data delete</code>, for one channel or the whole server.</li>
-      <li>Anyone can contact us to ask what's stored about an in-game name, or to have it corrected or deleted.</li>
+      <li>Server admins can delete their server's trivia scores at any time with <code>/trivia reset</code>.</li>
+      <li>Anyone can contact us to ask what's stored about an in-game name or their trivia scores, or to have it corrected or deleted.</li>
       <li>Depending on where you live (for example in the EU or UK), you may have further rights, such as to object to processing or to complain to your data protection authority. We rely on our legitimate interest in providing the features a server's admins asked for.</li>
     </ul>
 

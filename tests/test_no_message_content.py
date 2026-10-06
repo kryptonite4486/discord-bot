@@ -20,6 +20,7 @@ from bot.cogs.ingest import BATCH_DONE_WORDS, Ingest, batch_word, mentions_user 
 from bot.cogs.ops import Ops  # noqa: E402
 from bot.cogs.planner import Planner  # noqa: E402
 from bot.cogs.reports import Reports  # noqa: E402
+from bot.cogs.trivia import Trivia  # noqa: E402
 from bot.main import LastZAssistant  # noqa: E402
 from bot.utils.archive import ImageSource  # noqa: E402
 
@@ -49,7 +50,7 @@ class IntentTests(unittest.TestCase):
             planner_url="https://example.test",
         )
         bot = SimpleNamespace(settings=settings)
-        for cls in (Admin, Data, HelpCmd, Ops, Planner, Reports):
+        for cls in (Admin, Data, HelpCmd, Ops, Planner, Reports, Trivia):
             with self.subTest(cog=cls.__name__):
                 self.assertEqual(cls(bot).get_commands(), [])  # type: ignore[arg-type]
         self.assertEqual(_ingest_cog().get_commands(), [])

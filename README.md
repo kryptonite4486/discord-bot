@@ -192,7 +192,7 @@ Everyone in a joined channel can answer. Answers are buttons (A–D), so the bot
 
 Cross-server play shows players' Discord display names and server names to the other servers in the match and on the cross-server leaderboard. A server that turns it off with `/trivia settings cross_server:False` can't open or join cross-server matches and is left off that leaderboard.
 
-**Questions** come from `bot/trivia/questions.json`, bundled with the bot (about 90 questions across 8 categories; no third-party service). Each server avoids repeating its last 300 questions while fresh ones remain. To use your own bank, set `TRIVIA_QUESTIONS_PATH` to a JSON file in the same format (one to three wrong answers per question, so true/false works). The file is checked at startup; if it's missing or any entry is invalid, the error is logged and the bundled questions are used instead.
+**Questions** come from `bot/trivia/questions.json`, bundled with the bot (about 90 questions across 8 categories; no third-party service). Each server remembers its last 300 questions asked: unasked ones come first, and once a server has seen them all, the ones asked longest ago are reused first, so a small bank cycles through every question before repeating one. To use your own bank, set `TRIVIA_QUESTIONS_PATH` to a JSON file in the same format (one to three wrong answers per question, so true/false works). The file is checked at startup; if it's missing or any entry is invalid, the error is logged and the bundled questions are used instead.
 
 ## Dataset is always named
 

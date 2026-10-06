@@ -1,0 +1,142 @@
+"""Trivia question bank: loading, validation and picking questions for a match.
+
+The bank is a JSON list bundled with the bot (``questions.json``), so trivia
+needs no third-party service. ``TRIVIA_QUESTIONS_PATH`` points at a
+replacement file in the same format:
+
+    {"category": "Science", "difficulty": "easy", "question": "...",
+     "correct": "...", "incorrect": ["...", "...", "..."]}
+
+``incorrect`` holds one to three wrong answers, so true/false questions work.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import random
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+BUNDLED_BANK = Path(__file__).with_name("questions.json")
+DIFFICULTIES = ("easy", "medium", "hard")
+# Discord button labels max out at 80 characters, with room for "A. ".
+MAX_CHOICE_LEN = 76
+MAX_QUESTION_LEN = 300
+
+
+@dataclass(frozen=True)
+class Question:
+    id: str
+    category: str
+    difficulty: str
+    text: str
+    correct: str
+    incorrect: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AskedQuestion:
+    """A question as shown in one match: choices in a fixed, shuffled order."""
+
+    question: Question
+    choices: tuple[str, ...]
+    answer_index: int
+
+    @property
+    def correct(self) -> str:
+        return self.choices[self.answer_index]
+
+
+def _question_id(text: str) -> str:
+    # Stable across bank edits that only reorder entries.
+    return hashlib.sha1(text.strip().lower().encode()).hexdigest()[:12]
+
+
+def parse_bank(entries: Iterable[dict]) -> list[Question]:
+    """Validate raw entries; raise ValueError naming the first bad one."""
+    questions: list[Question] = []
+    seen: set[str] = set()
+    for n, raw in enumerate(entries, start=1):
+        try:
+            text = str(raw["question"]).strip()
+            correct = str(raw["correct"]).strip()
+            incorrect = tuple(str(x).strip() for x in raw["incorrect"])
+            category = str(raw.get("category") or "General Knowledge").strip()
+            difficulty = str(raw.get("difficulty") or "medium").strip().lower()
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"Question {n}: missing or invalid field ({exc})") from exc
+        problem = None
+        if not text or len(text) > MAX_QUESTION_LEN:
+            problem = f"question text must be 1-{MAX_QUESTION_LEN} characters"
+        elif not 1 <= len(incorrect) <= 3:
+            problem = "needs one to three incorrect answers"
+        elif any(not c or len(c) > MAX_CHOICE_LEN for c in (correct, *incorrect)):
+            problem = f"answers must be 1-{MAX_CHOICE_LEN} characters"
+        elif len({c.lower() for c in (correct, *incorrect)}) != len(incorrect) + 1:
+            problem = "answers must all be different"
+        elif difficulty not in DIFFICULTIES:
+            problem = f"difficulty must be one of {', '.join(DIFFICULTIES)}"
+        if problem:
+            raise ValueError(f"Question {n} ({text[:40]!r}): {problem}")
+        qid = _question_id(text)
+        if qid in seen:
+            raise ValueError(f"Question {n} ({text[:40]!r}) is a duplicate")
+        seen.add(qid)
+        questions.append(Question(qid, category, difficulty, text, correct, incorrect))
+    if not questions:
+        raise ValueError("The question bank is empty")
+    return questions
+
+
+def load_bank(path: Path | None = None) -> list[Question]:
+    path = path or BUNDLED_BANK
+    with path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, list):
+        raise ValueError(f"{path}: expected a JSON list of questions")
+    return parse_bank(data)
+
+
+def categories(bank: Sequence[Question]) -> list[str]:
+    return sorted({q.category for q in bank}, key=str.lower)
+
+
+def pick_questions(
+    bank: Sequence[Question],
+    count: int,
+    *,
+    category: str | None = None,
+    difficulty: str | None = None,
+    avoid: Iterable[str] = (),
+    rng: random.Random | None = None,
+) -> list[AskedQuestion]:
+    """Up to ``count`` questions with shuffled choices.
+
+    ``avoid`` lists recently asked question IDs, oldest first. Fresh questions
+    come first; once they run out, the ones asked longest ago fill the rest,
+    so a small bank cycles through everything before repeating.
+    """
+    rng = rng or random.Random()
+    pool = [
+        q
+        for q in bank
+        if (category is None or q.category.lower() == category.lower())
+        and (difficulty is None or q.difficulty == difficulty)
+    ]
+    # Position of each ID's latest use: lower = asked longer ago.
+    last_asked = {qid: n for n, qid in enumerate(avoid)}
+    fresh = [q for q in pool if q.id not in last_asked]
+    rng.shuffle(fresh)
+    stale = sorted(
+        (q for q in pool if q.id in last_asked), key=lambda q: last_asked[q.id]
+    )
+    picked = (fresh + stale)[:count]
+    rng.shuffle(picked)  # don't ask the reused ones in a predictable order
+    asked = []
+    for q in picked:
+        choices = [q.correct, *q.incorrect]
+        rng.shuffle(choices)
+        asked.append(AskedQuestion(q, tuple(choices), choices.index(q.correct)))
+    return asked
