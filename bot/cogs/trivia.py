@@ -98,6 +98,8 @@ class Game:
     seats: dict[int, Seat] = field(default_factory=dict)  # channel_id -> Seat
     invites: list[discord.Message] = field(default_factory=list)
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set when everyone expected has answered, so the round can end early.
+    round_done: asyncio.Event = field(default_factory=asyncio.Event)
     stopped_by: str | None = None
     task: asyncio.Task | None = None
 
@@ -128,7 +130,8 @@ def lobby_embed(game: Game) -> discord.Embed:
             description=(
                 f"{_settings_line(game)}\nFirst question {starts}. Anyone in this "
                 "channel can play: press a button to answer. Faster correct "
-                "answers score more."
+                "answers score more, and a question ends early once everyone "
+                "playing has answered."
             ),
             color=COLOR,
         )
@@ -150,6 +153,14 @@ def lobby_embed(game: Game) -> discord.Embed:
         inline=False,
     )
     return embed
+
+
+def ended_lobby_embed(game: Game, note: str) -> discord.Embed:
+    """A lobby message once its match ended before the first question."""
+    title = "🧠 Trivia" if game.mode is Mode.SERVER else "🌐 Cross-server trivia"
+    return discord.Embed(
+        title=title, description=f"{_settings_line(game)}\n{note}", color=COLOR
+    )
 
 
 def invite_embed(game: Game) -> discord.Embed:
@@ -508,6 +519,9 @@ class Trivia(commands.Cog):
                 allowed_mentions=NO_MENTIONS,
             )
             if game.match.index < 0:
+                await self._retire_lobby(
+                    game, [seat], f"This channel left before the first question ({who})."
+                )
                 await self._refresh_lobby(game)
             return
         game.stopped_by = who
@@ -714,6 +728,14 @@ class Trivia(commands.Cog):
             return_exceptions=True,
         )
 
+    async def _retire_lobby(self, game: Game, seats: list[Seat], note: str) -> None:
+        """Replace the countdown on these channels' lobby messages with ``note``."""
+        embed = ended_lobby_embed(game, note)
+        await asyncio.gather(
+            *(s.message.edit(embed=embed) for s in seats if s.message is not None),
+            return_exceptions=True,
+        )
+
     async def _close_lobby(self, game: Game) -> None:
         if self.lobby is game:
             self.lobby = None
@@ -744,6 +766,8 @@ class Trivia(commands.Cog):
                 guild_name=interaction.guild.name if interaction.guild else "?",
                 name=interaction.user.display_name,
             )
+            if result is AnswerResult.LOCKED and game.match.everyone_answered:
+                game.round_done.set()
         asked = game.match.questions[round_index]
         text = {
             AnswerResult.LOCKED: f"🔒 Locked in **{LETTERS[choice]}. "
@@ -754,21 +778,25 @@ class Trivia(commands.Cog):
         await interaction.response.send_message(text, ephemeral=True)
 
     async def _run(self, game: Game, countdown: float) -> None:
+        # Shown on the lobby messages if the match ends before its first question.
+        lobby_note = "Cancelled before the first question."
         try:
             started = not await self._pause(game, countdown)
             if game.mode is Mode.GLOBAL:
                 await self._close_lobby(game)
             loop = asyncio.get_running_loop()
             while started and game.match.has_next and game.seats:
+                game.round_done.clear()
                 asked = game.match.open_round(loop.time())
                 await self._broadcast_question(game, asked)
-                stopped = await self._pause(game, game.match.seconds)
+                stopped = await self._pause(game, game.match.seconds, until=game.round_done)
                 result = game.match.close_round()
                 await self._broadcast_reveal(game, result)
                 if stopped or (game.match.has_next and await self._pause(game, REVEAL_PAUSE)):
                     break
             await self._finish(game)
         except asyncio.CancelledError:
+            lobby_note = "Cancelled: the bot restarted before the first question."
             await self._post_all(
                 game, discord.Embed(description="Trivia stopped: the bot is restarting.")
             )
@@ -781,16 +809,24 @@ class Trivia(commands.Cog):
         finally:
             if self.lobby is game:
                 self.lobby = None
+            if game.match.index < 0:
+                if game.stopped_by:
+                    lobby_note = f"Stopped by {game.stopped_by} before the first question."
+                await self._retire_lobby(game, list(game.seats.values()), lobby_note)
             for channel_id in list(game.seats):
                 self._release_seat(game, channel_id)
 
-    async def _pause(self, game: Game, seconds: float) -> bool:
-        """Wait ``seconds``; True if the game was stopped meanwhile."""
+    async def _pause(
+        self, game: Game, seconds: float, *, until: asyncio.Event | None = None
+    ) -> bool:
+        """Wait ``seconds``, or until ``until`` is set; True if the game was stopped meanwhile."""
+        waiters = [asyncio.create_task(e.wait()) for e in (game.stop_event, until) if e]
         try:
-            await asyncio.wait_for(game.stop_event.wait(), seconds)
-            return True
-        except asyncio.TimeoutError:
-            return game.stop_event.is_set()
+            await asyncio.wait(waiters, timeout=seconds, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        return game.stop_event.is_set()
 
     async def _broadcast_question(self, game: Game, asked: AskedQuestion) -> None:
         embed = question_embed(game, asked)

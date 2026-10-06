@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import sys
 import tempfile
@@ -133,6 +134,36 @@ class MatchTests(unittest.TestCase):
         self.assertFalse(m.has_next)
         with self.assertRaises(RuntimeError):
             m.open_round(1.0)
+
+    def test_everyone_answered_waits_for_last_rounds_players(self) -> None:
+        m = _match(n=5)
+        m.open_round(0.0)
+        self._answer(m, 1, 0, 0.0)
+        self._answer(m, 2, 0, 0.0)
+        self.assertFalse(m.everyone_answered)  # first question: nobody expected yet
+        m.close_round()
+        m.open_round(20.0)
+        self._answer(m, 1, 0, 20.0)
+        self.assertFalse(m.everyone_answered)  # still waiting for player 2
+        self._answer(m, 3, 0, 20.0)  # a newcomer doesn't satisfy the wait
+        self.assertFalse(m.everyone_answered)
+        self._answer(m, 2, 0, 20.0)
+        self.assertTrue(m.everyone_answered)
+        m.close_round()
+        self.assertFalse(m.everyone_answered)  # closed rounds never count
+        m.open_round(40.0)
+        self._answer(m, 1, 0, 40.0)
+        self._answer(m, 3, 0, 40.0)
+        self.assertFalse(m.everyone_answered)  # newcomer 3 is expected now
+        self._answer(m, 2, 0, 40.0)
+        self.assertTrue(m.everyone_answered)
+        m.close_round()
+        m.open_round(60.0)
+        self._answer(m, 1, 0, 60.0)
+        m.close_round()  # 2 and 3 skip this one, so they aren't waited for next
+        m.open_round(80.0)
+        self._answer(m, 1, 0, 80.0)
+        self.assertTrue(m.everyone_answered)
 
     def test_guild_totals_keep_first_server(self) -> None:
         m = _match(mode=Mode.GLOBAL)
@@ -344,6 +375,27 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(r["UserId"], r["Wins"], r["Correct"]) for r in rows], [("10", 1, 3), ("11", 0, 0)])
         self.assertEqual(await self.db.trivia_leaderboard(guild_id=None), [])  # not cross-server
 
+    async def test_rounds_end_early_once_everyone_has_answered(self) -> None:
+        async def on_question(channel, view):
+            await self._click(10, self.guild_a, channel, view, right=True)
+            if view.round_index < 2:  # 11 skips the last question
+                await self._click(11, self.guild_a, channel, view, right=False)
+
+        channel = FakeChannel(100, on_question)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        game = await self._start(_interaction(10, self.guild_a, channel), seconds=1.0)
+        await game.task
+        # Question 1 runs its full second (nobody is expected yet), question 2
+        # ends as soon as both have answered, and question 3 waits out its
+        # second for 11, who answered question 2 but skips this one.
+        elapsed = loop.time() - began
+        self.assertGreaterEqual(elapsed, 2.0)
+        self.assertLess(elapsed, 2.8)
+        self.assertEqual(channel.titles()[-1], "🏆 Trivia results")
+        rows = await self.db.trivia_leaderboard(guild_id="1")
+        self.assertEqual([(r["UserId"], r["Correct"]) for r in rows], [("10", 3), ("11", 0)])
+
     async def test_one_match_per_channel_and_stop(self) -> None:
         channel = FakeChannel(100)
         game = await self._start(_interaction(10, self.guild_a, channel), seconds=5)
@@ -420,11 +472,19 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
         await self._start(again, mode=SimpleNamespace(value="global"))
         self.assertIn("recently", again.replies[0][0])
 
+    async def test_stopping_in_the_lobby_updates_the_lobby_message(self) -> None:
+        host = _interaction(10, self.guild_a, FakeChannel(100))
+        game = await self._start(host, mode=SimpleNamespace(value="global"), seconds=5)
+        self.assertIn("First question", host.original.embed.description)
+        await self.cog.stop.callback(self.cog, _interaction(10, self.guild_a, host.channel))
+        await game.task
+        self.assertIn("Stopped by user10 before the first question.", host.original.embed.description)
+        self.assertNotIn("First question", host.original.embed.description)
+
     async def test_leaving_a_cross_server_match_lets_others_continue(self) -> None:
         chan_a, chan_b = FakeChannel(100), FakeChannel(200)
-        game = await self._start(
-            _interaction(10, self.guild_a, chan_a), mode=SimpleNamespace(value="global"), seconds=5,
-        )
+        host = _interaction(10, self.guild_a, chan_a)
+        game = await self._start(host, mode=SimpleNamespace(value="global"), seconds=5)
         # Starting cross-server while a lobby is open joins it.
         joiner = _interaction(20, self.guild_b, chan_b)
         await self._start(joiner, mode=SimpleNamespace(value="global"))
@@ -434,6 +494,8 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("left the cross-server match", leaver.replies[0][0])
         self.assertEqual(set(game.seats), {200})
         self.assertFalse(game.stop_event.is_set())
+        self.assertIn("This channel left before the first question", host.original.embed.description)
+        self.assertEqual(joiner.original.embed.fields[0].name, "Servers in (1)")
         await self.cog.stop.callback(self.cog, _interaction(20, self.guild_b, chan_b))
         await game.task
         self.assertEqual(chan_b.titles()[-1], "Trivia stopped")

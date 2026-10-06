@@ -5,6 +5,11 @@ each player may lock in one answer; the first answer counts and can't be
 changed. A correct answer scores ``BASE_POINTS`` plus a speed bonus of up to
 ``SPEED_BONUS`` that shrinks linearly over the answer window.
 
+A round can end before its timer once everyone who answered the previous
+question has answered this one (``everyone_answered``). The first question
+always runs its full time, since nobody is known to be playing yet, and a
+player who skips a question isn't waited for on the next one.
+
 Players are keyed by Discord user ID. In a cross-server match a player keeps
 the server they first answered from, so their points count for that server.
 """
@@ -62,6 +67,8 @@ class Match:
     _opened_at: float | None = None
     # user_id -> (choice, seconds after the round opened)
     _answers: dict[int, tuple[int, float]] = field(default_factory=dict)
+    # Who answered the last closed round: the players a round waits for.
+    _expected: frozenset[int] = frozenset()
 
     @property
     def current(self) -> AskedQuestion | None:
@@ -112,6 +119,15 @@ class Match:
         self._answers[user_id] = (choice, max(0.0, elapsed))
         return AnswerResult.LOCKED
 
+    @property
+    def everyone_answered(self) -> bool:
+        """True once every player expected this round has locked in an answer."""
+        return (
+            self.round_open
+            and bool(self._expected)
+            and self._expected <= self._answers.keys()
+        )
+
     def points_for(self, elapsed: float) -> int:
         remaining = max(0.0, 1.0 - elapsed / self.seconds) if self.seconds else 0.0
         return BASE_POINTS + round(SPEED_BONUS * remaining)
@@ -121,6 +137,7 @@ class Match:
         if asked is None or self._opened_at is None:
             raise RuntimeError("No round is open")
         self._opened_at = None
+        self._expected = frozenset(self._answers)
         counts = [0] * len(asked.choices)
         winners: list[tuple[Player, int, float]] = []
         for user_id, (choice, elapsed) in self._answers.items():
