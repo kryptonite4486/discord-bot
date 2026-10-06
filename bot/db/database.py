@@ -113,6 +113,17 @@ CREATE TABLE IF NOT EXISTS GiftCodeRedemption (
     PRIMARY KEY (CodeId, GuildId)
 );
 
+-- Gift expiry reminders already sent (bot/utils/gift_reminders.py), one row
+-- per entitlement, stage and end date. Keyed on EndsAt so extending an
+-- entitlement re-arms its reminders.
+CREATE TABLE IF NOT EXISTS EntitlementReminder (
+    EntitlementId INTEGER NOT NULL,
+    Stage         TEXT    NOT NULL,  -- 'operator_7d' | 'server_3d'
+    EndsAt        TEXT    NOT NULL,
+    SentAt        TEXT    NOT NULL,
+    PRIMARY KEY (EntitlementId, Stage, EndsAt)
+);
+
 -- Per-server usage, one row per UTC day and measure (see USAGE_KINDS).
 CREATE TABLE IF NOT EXISTS UsageLedger (
     GuildId TEXT NOT NULL,
@@ -1642,6 +1653,24 @@ class Database:
                 raise
         details.update(entitlement_id=entitlement_id, ends_at=ends_at)
         return "ok", details
+
+    async def reminder_sent(self, entitlement_id: int, stage: str, ends_at: str) -> bool:
+        async with self.conn.execute(
+            "SELECT 1 FROM EntitlementReminder WHERE EntitlementId = ? AND Stage = ? AND EndsAt = ?",
+            (entitlement_id, stage, ends_at),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def mark_reminder_sent(
+        self, entitlement_id: int, stage: str, ends_at: str, *, sent_at: str
+    ) -> None:
+        async with self._write_lock:
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO EntitlementReminder (EntitlementId, Stage, EndsAt, SentAt) "
+                "VALUES (?, ?, ?, ?)",
+                (entitlement_id, stage, ends_at, sent_at),
+            )
+            await self.conn.commit()
 
     # --- Server settings (/setup) -------------------------------------------
 
