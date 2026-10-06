@@ -330,6 +330,30 @@ class Database:
         placeholders = ",".join("?" * len(ids))
         return f" AND ChannelId IN ({placeholders})", ids
 
+    @classmethod
+    def _report_scope_sql(
+        cls,
+        *,
+        channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
+        include_unassigned: bool = False,
+        min_week: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        """Channel filter plus the tier history window; every report query uses it.
+
+        ``min_week`` (ISO Sunday) hides older weeks; None shows all. Rows are
+        hidden, never deleted (docs/monetization-plan.md section 3).
+        """
+        sql, params = cls._channel_scope_sql(
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
+        )
+        if min_week is not None:
+            sql += " AND WeekStart >= ?"
+            params = [*params, min_week]
+        return sql, params
+
     async def upsert_metric(
         self,
         guild_id: str,
@@ -653,6 +677,7 @@ class Database:
         channel_id: str | None = None,
         channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
+        min_week: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Return a player's rows with Rank and Population within their data channel.
@@ -661,10 +686,11 @@ class Database:
         WeekStart + MetricType (ordered by Value descending). Population is
         that group's size.
         """
-        extra_sql, extra_params = self._channel_scope_sql(
+        extra_sql, extra_params = self._report_scope_sql(
             channel_id=channel_id,
             channel_ids=channel_ids,
             include_unassigned=include_unassigned,
+            min_week=min_week,
         )
         player_clauses = ["PlayerName = ? COLLATE NOCASE"]
         player_params: list[Any] = [player_name]
@@ -719,11 +745,13 @@ class Database:
         channel_id: str | None = None,
         channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
+        min_week: str | None = None,
     ) -> list[dict[str, Any]]:
-        extra_sql, extra_params = self._channel_scope_sql(
+        extra_sql, extra_params = self._report_scope_sql(
             channel_id=channel_id,
             channel_ids=channel_ids,
             include_unassigned=include_unassigned,
+            min_week=min_week,
         )
         if metric_type:
             sql = f"""
@@ -756,12 +784,14 @@ class Database:
         channel_id: str | None = None,
         channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
+        min_week: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return recent weekly values for a metric, optionally for one player."""
-        extra_sql, extra_params = self._channel_scope_sql(
+        extra_sql, extra_params = self._report_scope_sql(
             channel_id=channel_id,
             channel_ids=channel_ids,
             include_unassigned=include_unassigned,
+            min_week=min_week,
         )
         week_filter_sql = f"""
             SELECT DISTINCT WeekStart
@@ -810,6 +840,7 @@ class Database:
         channel_id: str | None = None,
         channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
+        min_week: str | None = None,
     ) -> list[dict[str, Any]]:
         trends = await self.get_trends(
             guild_id,
@@ -818,6 +849,7 @@ class Database:
             channel_id=channel_id,
             channel_ids=channel_ids,
             include_unassigned=include_unassigned,
+            min_week=min_week,
         )
         by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in trends:
@@ -859,11 +891,13 @@ class Database:
         channel_id: str | None = None,
         channel_ids: Sequence[str] | None = None,
         include_unassigned: bool = False,
+        min_week: str | None = None,
     ) -> list[dict[str, Any]]:
-        extra_sql, extra_params = self._channel_scope_sql(
+        extra_sql, extra_params = self._report_scope_sql(
             channel_id=channel_id,
             channel_ids=channel_ids,
             include_unassigned=include_unassigned,
+            min_week=min_week,
         )
         if week_start is None:
             async with self.conn.execute(
@@ -893,6 +927,53 @@ class Database:
         async with self.conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def hidden_weeks(
+        self,
+        guild_id: str,
+        min_week: str,
+        *,
+        metric_type: str | None = None,
+        player_name: str | None = None,
+        week_start: str | None = None,
+        recent: int | None = None,
+        channel_id: str | None = None,
+        channel_ids: Sequence[str] | None = None,
+        include_unassigned: bool = False,
+    ) -> list[str]:
+        """Weeks with data older than ``min_week`` that a report would have shown.
+
+        Filters match the report: one ``week_start``, the ``recent`` N weeks
+        with data (trend, growth, latest leaderboard), or all (player).
+        """
+        extra_sql, extra_params = self._channel_scope_sql(
+            channel_id=channel_id,
+            channel_ids=channel_ids,
+            include_unassigned=include_unassigned,
+        )
+        clauses = ["GuildId = ?"]
+        params: list[Any] = [guild_id]
+        if metric_type:
+            clauses.append("MetricType = ?")
+            params.append(metric_type)
+        if player_name:
+            clauses.append("PlayerName = ? COLLATE NOCASE")
+            params.append(player_name)
+        if week_start:
+            clauses.append("WeekStart = ?")
+            params.append(week_start)
+        sql = f"""
+            SELECT DISTINCT WeekStart FROM WeeklyMetrics
+            WHERE {' AND '.join(clauses)}{extra_sql}
+            ORDER BY WeekStart DESC
+        """
+        params.extend(extra_params)
+        if recent is not None:
+            sql += " LIMIT ?"
+            params.append(recent)
+        async with self.conn.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [r["WeekStart"] for r in rows if r["WeekStart"] < min_week]
 
     async def list_weeks(
         self,
