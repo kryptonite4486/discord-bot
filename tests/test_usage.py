@@ -132,7 +132,7 @@ class QueueReportTests(unittest.TestCase):
     def test_per_server_rows(self) -> None:
         states = [
             GuildQueueState("1", running=1, waiting=2, longest_run_seconds=75, longest_wait_seconds=30),
-            GuildQueueState("2", running=0, waiting=1, longest_run_seconds=0, longest_wait_seconds=3700),
+            GuildQueueState("2", running=0, waiting=1, longest_run_seconds=0, longest_wait_seconds=3700, priority=2),
         ]
         text = format_queue_report(states, 1, {"1": "SWag"})
         self.assertIn("1/1 slot(s) busy, 3 request(s) waiting across 2 server(s)", text)
@@ -141,6 +141,8 @@ class QueueReportTests(unittest.TestCase):
         self.assertIn("30s", swag)
         other = next(line for line in text.splitlines() if line.startswith("2 "))
         self.assertIn("1h 01m", other)
+        self.assertTrue(swag.endswith("Standard"))
+        self.assertTrue(other.endswith("Highest"))
 
 
 if __name__ == "__main__":

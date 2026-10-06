@@ -20,7 +20,7 @@ from discord.ext import commands
 
 from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
-from bot.utils.fair_queue import GuildQueueState
+from bot.utils.fair_queue import LEVEL_NAMES, GuildQueueState
 from bot.utils.retention import RemovedServer, removed_servers
 from bot.utils.tiers import TIERS, status_from_entitlements
 
@@ -206,13 +206,14 @@ def format_queue_report(
     lines = [
         head,
         "```",
-        f"{'Server':<22} {'Run':>3} {'Wait':>4} {'Running for':>11} {'Oldest wait':>11}",
+        f"{'Server':<22} {'Run':>3} {'Wait':>4} {'Running for':>11} {'Oldest wait':>11} Lane",
     ]
     for s in states[:MAX_USAGE_ROWS]:
         lines.append(
             f"{names.get(s.guild_id, s.guild_id)[:22]:<22} {s.running:>3} {s.waiting:>4} "
             f"{_duration(s.longest_run_seconds) if s.running else '-':>11} "
-            f"{_duration(s.longest_wait_seconds) if s.waiting else '-':>11}"
+            f"{_duration(s.longest_wait_seconds) if s.waiting else '-':>11} "
+            f"{LEVEL_NAMES[s.priority] if s.waiting else '-'}"
         )
     if len(states) > MAX_USAGE_ROWS:
         lines.append(f"…and {len(states) - MAX_USAGE_ROWS} more server(s)")
