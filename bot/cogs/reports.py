@@ -14,10 +14,8 @@ from discord.ext import commands
 from bot.config import resolve_metric
 from bot.reporting import charts, formatters
 from bot.utils.guild import (
-    channel_id_from_context,
     channel_id_from_interaction,
     channel_name_map,
-    guild_id_from_context,
     guild_id_from_interaction,
 )
 from bot.utils.parsing import chunk_fenced_md, parse_week_start
@@ -688,37 +686,6 @@ class Reports(commands.Cog):
             discord.File(png, filename=f"{metric_type}_leaderboard.png") if png else None
         )
         await self._send_text(interaction, text, file=file)
-
-    # Prefix fallbacks (current channel only)
-    @commands.command(name="reportweek")
-    async def report_week_prefix(self, ctx: commands.Context, week: str | None = None) -> None:
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        week_start = parse_week_start(week)
-        rows = await self.bot.db.get_week_metrics(
-            guild_id,
-            week_start,
-            channel_id=channel_id,
-            include_unassigned=False,
-        )
-        await ctx.reply(formatters.week_summary_text(week_start, rows)[:1900])
-
-    @commands.command(name="reportplayer")
-    async def report_player_prefix(self, ctx: commands.Context, *, name: str) -> None:
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        rows = await self.bot.db.get_player_metrics(
-            guild_id,
-            name,
-            channel_id=channel_id,
-            include_unassigned=False,
-        )
-        text = formatters.player_report_text(name, rows)
-        png = charts.player_trend_chart(name, rows)
-        if png:
-            await ctx.reply(text[:1500], file=discord.File(png, filename="trend.png"))
-        else:
-            await ctx.reply(text[:1900])
 
 
 async def setup(bot: commands.Bot) -> None:

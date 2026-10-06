@@ -345,8 +345,6 @@ class ReportAndHandlerTests(unittest.TestCase):
             # ...and refused if a server widens who can see it.
             for command in top.walk_commands():
                 self.assertTrue(command.checks, command.qualified_name)
-        prefix = {c.name: c for c in Admin(bot).get_commands()}  # type: ignore[arg-type]
-        self.assertTrue(prefix["dbstats"].checks)
 
 
 if __name__ == "__main__":

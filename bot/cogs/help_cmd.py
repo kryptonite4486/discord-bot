@@ -1,4 +1,4 @@
-"""Slash and prefix help for bot commands."""
+"""/help: the user-facing command list."""
 
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ Add / Ingest
   /add general      Add HQ Level and Power
   /ingest image     OCR up to 10 images on this command
   /ingest zip       OCR every image in a .zip (up to 50)
-  /ingest batch     Collect images/zips across messages (20; 50 with zips)
+  /ingest batch     Collect images/zips from messages that @mention the bot
+                    (20; 50 with zips); finish with `@LastZ Assistant done`
   /ingest text      Ingest pasted CSV/text rows
 
 Reports
@@ -56,7 +57,6 @@ Planner
 
 Help
   /help             Show this command list
-  !helpbot          Same help (prefix)
 ```
 
 Week args accept `YYYY-MM-DD`, `current`, or `last` (normalized to Sunday).
@@ -72,7 +72,7 @@ The bot flags (🚩) likely mistakes: Arena Power above total Power in the same 
 
 
 class HelpCmd(commands.Cog):
-    """User-facing command help (slash `/help`, prefix `!helpbot`)."""
+    """User-facing command help (`/help`)."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -82,15 +82,6 @@ class HelpCmd(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         for chunk in chunk_message(HELP_TEXT, limit=1900):
             await interaction.followup.send(chunk, ephemeral=True)
-
-    @commands.command(name="helpbot")
-    async def help_prefix(self, ctx: commands.Context) -> None:
-        """Prefix help that does not replace discord.py DefaultHelpCommand."""
-        for i, chunk in enumerate(chunk_message(HELP_TEXT, limit=1900)):
-            if i == 0:
-                await ctx.reply(chunk)
-            else:
-                await ctx.send(chunk)
 
 
 async def setup(bot: commands.Bot) -> None:

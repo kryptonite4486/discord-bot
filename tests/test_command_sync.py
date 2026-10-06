@@ -12,7 +12,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import discord  # noqa: E402
-from discord.ext import commands  # noqa: E402
 
 from bot.cogs.ops import Ops  # noqa: E402
 from bot.utils.command_sync import clear_guild_copies, sync_commands  # noqa: E402
@@ -162,12 +161,6 @@ class OperatorCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_other_user_in_control_guild_refused(self) -> None:
         ok, _ = await self._check(200, self.CONTROL)
         self.assertFalse(ok)
-
-    async def test_prefix_commands_refuse_non_operator(self) -> None:
-        cog = self._cog()
-        self.assertTrue(await cog.cog_check(SimpleNamespace(author=SimpleNamespace(id=self.OWNER))))
-        with self.assertRaises(commands.NotOwner):
-            await cog.cog_check(SimpleNamespace(author=SimpleNamespace(id=200)))
 
 
 if __name__ == "__main__":

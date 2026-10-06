@@ -26,9 +26,7 @@ from bot.utils.archive import (
     is_zip_upload,
 )
 from bot.utils.guild import (
-    channel_id_from_context,
     channel_id_from_interaction,
-    guild_id_from_context,
     guild_id_from_interaction,
 )
 from bot.utils.fair_queue import FairQueue
@@ -76,6 +74,24 @@ def _is_zip_attachment(attachment: discord.Attachment) -> bool:
     return is_zip_upload(attachment.filename, attachment.content_type)
 
 
+BATCH_DONE_WORDS = {"done", "finish", "go", "process"}
+
+
+def mentions_user(message: discord.Message, user_id: int) -> bool:
+    """True if ``message`` @mentions this user (not a role named like it).
+
+    Without the Message Content intent, Discord only gives the bot the text
+    and attachments of messages that mention it directly.
+    """
+    return any(u.id == user_id for u in message.mentions)
+
+
+def batch_word(content: str | None, user_id: int) -> str:
+    """Message text with the bot's mention removed, lowercased."""
+    text = (content or "").replace(f"<@{user_id}>", "").replace(f"<@!{user_id}>", "")
+    return text.strip().lower()
+
+
 def _summary_head(summary: str) -> str:
     """Batch header + outcome line(s), without the per-file breakdown."""
     return summary.split("\n\n**Per file:**", 1)[0]
@@ -93,7 +109,7 @@ class Ingest(commands.Cog):
             api_key=s.ocr_vision_api_key,
             timeout=s.ocr_vision_timeout,
         )
-        # Bot-wide OCR queue: every request (slash, zip, batch, prefix) waits
+        # Bot-wide OCR queue: every request (image, zip, batch) waits
         # here, so the vision server only sees OCR_MAX_CONCURRENCY requests at
         # a time. Servers take turns, one whole request each.
         self.ocr_queue = FairQueue(s.ocr_max_concurrency)
@@ -591,7 +607,7 @@ class Ingest(commands.Cog):
     @ingest.command(
         name="batch",
         description=(
-            f"Collect images or .zip files across messages (up to "
+            f"Collect images/.zips from messages that @mention me (up to "
             f"{MAX_INGEST_IMAGES} images, {MAX_BATCH_IMAGES} with zips), then OCR"
         ),
     )
@@ -620,13 +636,18 @@ class Ingest(commands.Cog):
             week_start,
             timeout_minutes,
         )
+        bot_user = self.bot.user
+        assert bot_user is not None
+        bot_mention, bot_name = bot_user.mention, bot_user.display_name
         await interaction.response.send_message(
             f"**Batch OCR armed** — `{kind}` → week `{week_start}`\n"
-            f"Send images or `.zip` files in this channel (Discord max "
-            f"**{MAX_ATTACHMENTS_PER_MESSAGE}** files each).\n"
+            f"Send images or `.zip` files in this channel, **@mentioning "
+            f"{bot_mention}** in each message (Discord max "
+            f"**{MAX_ATTACHMENTS_PER_MESSAGE}** files each). Messages without "
+            f"the mention are ignored.\n"
             f"I'll queue up to **{MAX_INGEST_IMAGES}** loose images, or "
             f"**{MAX_BATCH_IMAGES}** in total once a zip is included.\n"
-            f"Type `done` when finished (or wait until the cap / "
+            f"Send `@{bot_name} done` when finished (or wait until the cap / "
             f"{timeout_minutes} min timeout)."
         )
 
@@ -648,8 +669,9 @@ class Ingest(commands.Cog):
                 return False
             if message.channel.id != channel.id:
                 return False
-            content = (message.content or "").strip().lower()
-            if content in {"done", "finish", "go", "process"}:
+            if not mentions_user(message, bot_user.id):
+                return False
+            if batch_word(message.content, bot_user.id) in BATCH_DONE_WORDS:
                 return True
             return bool(self._filter_uploads(list(message.attachments)))
 
@@ -665,7 +687,7 @@ class Ingest(commands.Cog):
             except asyncio.TimeoutError:
                 break
 
-            content = (message.content or "").strip().lower()
+            content = batch_word(message.content, bot_user.id)
             new_sources, new_notes = await self._load_sources(
                 self._filter_uploads(list(message.attachments))
             )
@@ -676,7 +698,7 @@ class Ingest(commands.Cog):
             )
             added = len(collected) - before
 
-            if content in {"done", "finish", "go", "process"}:
+            if content in BATCH_DONE_WORDS:
                 break
 
             try:
@@ -1081,134 +1103,6 @@ class Ingest(commands.Cog):
             return "\n".join(lines), count, names, alerts
         finally:
             tmp_path.unlink(missing_ok=True)
-
-    @commands.command(name="ingestimage")
-    async def ingest_image_prefix(
-        self,
-        ctx: commands.Context,
-        dataset: str | None = None,
-        week: str | None = None,
-    ) -> None:
-        """OCR images or .zip files on this message. Usage: !ingestimage kills current"""
-        kind = (dataset or "").lower().strip()
-        if kind not in DATASET_KINDS:
-            await ctx.reply(
-                f"Usage: `!ingestimage <dataset> [week]` — dataset is one of "
-                f"`{DATASET_USAGE}`."
-            )
-            return
-        uploads = self._filter_uploads(list(ctx.message.attachments))
-        if not uploads:
-            await ctx.reply(
-                f"Attach 1–{MAX_ATTACHMENTS_PER_MESSAGE} images or a `.zip` to this "
-                f"message. For larger sets use `/ingest batch` or `/ingest zip`."
-            )
-            return
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        week_start = self._default_week(week)
-        sources, notes = await self._load_sources(uploads)
-        sources = self._cap_sources(sources)
-        if not sources:
-            await ctx.reply("\n".join(notes) or "No images found.")
-            return
-        label = f"Processing **{len(sources)}** image(s) (`{kind}` → `{week_start}`)"
-        status = await ctx.reply(f"{label}…")
-        summary = await self._process_attachments(
-            sources,
-            kind,
-            week_start,
-            guild_id,
-            channel_id,
-            progress=self._progress_editor(status, label),
-            notes=notes,
-        )
-        if len(summary) > 1900:
-            summary = summary[:1900] + "\n…"
-        await status.edit(content=summary)
-
-    async def _add_single_prefix(
-        self,
-        ctx: commands.Context,
-        metric_type: str,
-        player: str,
-        value: str,
-        week: str | None,
-    ) -> None:
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        week_start = self._default_week(week)
-        numeric = parse_numeric_value(value)
-        await self.bot.db.upsert_metric(
-            guild_id,
-            week_start,
-            player,
-            metric_type,
-            numeric,
-            channel_id=channel_id,
-        )
-        await ctx.reply(
-            f"Saved **{player}** {metric_type}="
-            f"{format_value(metric_type, numeric)} `{week_start}`"
-        )
-
-    @commands.command(name="addversus")
-    async def add_versus_prefix(
-        self, ctx: commands.Context, player: str, value: str, week: str | None = None
-    ) -> None:
-        await self._add_single_prefix(ctx, "VersusPoints", player, value, week)
-
-    @commands.command(name="addtech")
-    async def add_tech_prefix(
-        self, ctx: commands.Context, player: str, value: str, week: str | None = None
-    ) -> None:
-        await self._add_single_prefix(ctx, "TechContribution", player, value, week)
-
-    @commands.command(name="addarena")
-    async def add_arena_prefix(
-        self, ctx: commands.Context, player: str, value: str, week: str | None = None
-    ) -> None:
-        await self._add_single_prefix(ctx, "ArenaPower", player, value, week)
-
-    @commands.command(name="addkills")
-    async def add_kills_prefix(
-        self, ctx: commands.Context, player: str, value: str, week: str | None = None
-    ) -> None:
-        await self._add_single_prefix(ctx, "Kills", player, value, week)
-
-    @commands.command(name="addgeneral")
-    async def add_general_prefix(
-        self,
-        ctx: commands.Context,
-        player: str,
-        hq: str,
-        power: str,
-        week: str | None = None,
-    ) -> None:
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        week_start = self._default_week(week)
-        hq_val = parse_numeric_value(hq)
-        power_val = parse_numeric_value(power)
-        await self.bot.db.upsert_metric(
-            guild_id,
-            week_start,
-            player,
-            "HQLevel",
-            hq_val,
-            channel_id=channel_id,
-        )
-        await self.bot.db.upsert_metric(
-            guild_id,
-            week_start,
-            player,
-            "Power",
-            power_val,
-            channel_id=channel_id,
-        )
-        await ctx.reply(
-            f"Saved **{player}** HQ={hq_val:.0f} Power={format_value('Power', power_val)} `{week_start}`"
-        )
 
 
 async def setup(bot: commands.Bot) -> None:

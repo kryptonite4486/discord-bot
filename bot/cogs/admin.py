@@ -1,4 +1,4 @@
-"""Admin slash and prefix commands."""
+"""Admin slash commands (server-scoped) and the hourly backup task."""
 
 from __future__ import annotations
 
@@ -13,9 +13,7 @@ from bot.utils.backup import create_backup, last_backup_time, prune_older_than
 from bot.utils.names import group_variants
 from bot.utils.parsing import chunk_message
 from bot.utils.guild import (
-    channel_id_from_context,
     channel_id_from_interaction,
-    guild_id_from_context,
     guild_id_from_interaction,
 )
 
@@ -364,27 +362,6 @@ class Admin(commands.Cog):
             await interaction.followup.send(text, ephemeral=True)
         else:
             await interaction.response.send_message(text, ephemeral=True)
-
-    @commands.command(name="dbstats")
-    @commands.has_permissions(administrator=True)
-    async def stats_prefix(self, ctx: commands.Context, scope: str = "channel") -> None:
-        """Datastore stats. Usage: !dbstats [channel|server]"""
-        guild_id = guild_id_from_context(ctx)
-        channel_id = channel_id_from_context(ctx)
-        mode = (scope or "channel").strip().lower()
-        filter_channel_id = None if mode in {"server", "guild", "all"} else channel_id
-        stats = await self.bot.db.stats(
-            guild_id,
-            channel_id=filter_channel_id,
-            include_unassigned=False,
-        )
-        scope_label = "server" if filter_channel_id is None else "channel"
-        await ctx.reply(
-            f"Scope={scope_label} Guild={guild_id} Channel={channel_id} "
-            f"Rows={stats['rows']} Players={stats['players']} "
-            f"Weeks={stats['weeks']} Unassigned={stats['unassigned_rows']} "
-            f"Metrics={stats['by_metric']}"
-        )
 
 
 async def setup(bot: commands.Bot) -> None:

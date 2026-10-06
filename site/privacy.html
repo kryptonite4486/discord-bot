@@ -55,7 +55,7 @@
 
     <p><strong>Screenshots aren't kept.</strong> Images and zip files you upload are downloaded, read by a vision model running on our own hardware (not a third-party AI service), and discarded once the stats are extracted. They aren't used to train any model.</p>
 
-    <p><strong>Discord messages aren't stored.</strong> Discord sends the bot messages from channels it can see. It ignores everything except its own commands, and it doesn't store message text, member lists or Discord account details. While someone runs <code>/ingest batch</code>, the bot reads only that person's messages in that channel, to collect their screenshots, until they type <code>done</code>.</p>
+    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
 
     <h2>About player names</h2>
     <p>Player names come from the game and are uploaded by alliance members, usually the alliance's leaders. That means the bot can hold names of players who have never used it. If your in-game name is stored and you want it removed, ask the server's admins, who can delete it with <code>/data delete</code>, or contact us with the server and name, and we'll remove it.</p>

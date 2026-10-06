@@ -277,11 +277,6 @@ class Ops(commands.Cog):
         else:
             await interaction.response.send_message(text, ephemeral=True)
 
-    async def cog_check(self, ctx: commands.Context) -> bool:
-        if is_operator(self.bot, ctx.author.id):
-            return True
-        raise commands.NotOwner(NOT_OPERATOR_MESSAGE)
-
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
         if guild.id != self.bot.settings.control_guild_id:
@@ -391,17 +386,6 @@ class Ops(commands.Cog):
         await interaction.followup.send(
             format_usage_report(days, by_guild, by_day, names), ephemeral=True
         )
-
-    # Prefix fallbacks: operator only, in any server (useful before /ops is
-    # registered in the control server).
-    @commands.command(name="reload")
-    async def reload_prefix(self, ctx: commands.Context, cog: str) -> None:
-        await ctx.reply(await reload_cog(self.bot, cog))
-
-    @commands.command(name="sync")
-    async def sync_prefix(self, ctx: commands.Context) -> None:
-        """Register commands globally and remove duplicate copies everywhere."""
-        await ctx.reply(await run_command_sync(self.bot))
 
 
 async def setup(bot: commands.Bot) -> None:

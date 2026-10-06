@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Iterable
 
 import discord
-from discord.ext import commands
 
 GUILD_ONLY_MESSAGE = (
     "This bot only works in a Discord server — DMs are not supported. "
@@ -24,24 +23,10 @@ async def reject_dm_interaction(interaction: discord.Interaction) -> bool:
     return False
 
 
-async def reject_dm_context(ctx: commands.Context) -> bool:
-    """Return True if the context is in a guild; otherwise reply and return False."""
-    if ctx.guild is not None:
-        return True
-    await ctx.reply(GUILD_ONLY_MESSAGE)
-    return False
-
-
 def guild_id_from_interaction(interaction: discord.Interaction) -> str:
     if interaction.guild_id is None:
         raise RuntimeError("guild_id required; interaction is not in a guild")
     return str(interaction.guild_id)
-
-
-def guild_id_from_context(ctx: commands.Context) -> str:
-    if ctx.guild is None:
-        raise RuntimeError("guild_id required; context is not in a guild")
-    return str(ctx.guild.id)
 
 
 def channel_id_from_interaction(interaction: discord.Interaction) -> str:
@@ -49,12 +34,6 @@ def channel_id_from_interaction(interaction: discord.Interaction) -> str:
     if interaction.channel_id is None:
         raise RuntimeError("channel_id required; interaction has no channel")
     return str(interaction.channel_id)
-
-
-def channel_id_from_context(ctx: commands.Context) -> str:
-    if ctx.channel is None:
-        raise RuntimeError("channel_id required; context has no channel")
-    return str(ctx.channel.id)
 
 
 def channel_display_name(

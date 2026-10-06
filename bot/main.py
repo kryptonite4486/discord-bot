@@ -14,7 +14,7 @@ from bot.config import Settings
 from bot.db import Database
 from bot.utils import setup_logging
 from bot.utils.command_sync import sync_commands
-from bot.utils.guild import reject_dm_context, reject_dm_interaction
+from bot.utils.guild import reject_dm_interaction
 from bot.utils.storage import check_persistent_paths
 
 log = logging.getLogger(__name__)
@@ -34,16 +34,21 @@ class LastZAssistant(commands.Bot):
     """LastZ Assistant: modular discord.py bot with SQLite-backed weekly metrics."""
 
     def __init__(self, settings: Settings, *, backups_enabled: bool = False) -> None:
+        # No privileged intents. Without Message Content, Discord only shows the
+        # bot the text and attachments of messages that @mention it, which is
+        # all /ingest batch needs; everything else is slash commands.
         intents = discord.Intents.default()
-        intents.message_content = settings.message_content_intent
+        intents.message_content = False
         intents.members = False
         intents.presences = False
 
         super().__init__(
-            command_prefix=commands.when_mentioned_or(settings.command_prefix),
+            # Required by commands.Bot, but unused: there are no text commands
+            # and on_message below never processes them.
+            command_prefix=commands.when_mentioned,
             intents=intents,
             application_id=settings.app_id,
-            help_command=commands.DefaultHelpCommand(),
+            help_command=None,
         )
         self.settings = settings
         self.backups_enabled = backups_enabled
@@ -52,18 +57,14 @@ class LastZAssistant(commands.Bot):
             legacy_guild_id=settings.legacy_guild_id,
         )
         self._commands_synced = False
-        if not settings.message_content_intent:
-            log.warning(
-                "MESSAGE_CONTENT_INTENT=false — prefix commands and /ingest batch "
-                "will not work; other slash commands still will."
-            )
 
-        # Central guild-only gates so every command (and future cogs) inherit them.
-        self.add_check(self._guild_only_prefix)
+        # Central guild-only gate so every slash command (and future cogs) inherit it.
         self.tree.interaction_check = self._guild_only_interaction
 
-    async def _guild_only_prefix(self, ctx: commands.Context) -> bool:
-        return await reject_dm_context(ctx)
+    async def on_message(self, message: discord.Message) -> None:
+        # Text commands were retired; don't parse messages as commands (an
+        # "@LastZ Assistant done" during /ingest batch would be an unknown one).
+        return
 
     async def _guild_only_interaction(self, interaction: discord.Interaction) -> bool:
         # Allow non-command interactions (components, etc.) without a guild check
@@ -117,21 +118,6 @@ class LastZAssistant(commands.Bot):
                 name="alliance stats",
             )
         )
-
-    async def on_command_error(self, ctx: commands.Context, error: Exception) -> None:
-        if isinstance(error, commands.CommandNotFound):
-            return
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.reply("You lack permission for that command.")
-            return
-        if isinstance(error, commands.CheckFailure):
-            # Guild-only (and similar) checks reply themselves.
-            return
-        if isinstance(error, commands.BadArgument):
-            await ctx.reply(f"Bad argument: {error}")
-            return
-        log.exception("Command error in %s: %s", ctx.command, error)
-        await ctx.reply(f"Error: `{error}`")
 
     async def on_app_command_error(
         self,

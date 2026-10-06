@@ -66,7 +66,6 @@ DEFAULT_PLANNER_URL = "https://lastz-territory-planner.pages.dev"
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
-    command_prefix: str
     database_path: Path
     ocr_vision_base_url: str
     ocr_vision_model: str
@@ -80,7 +79,6 @@ class Settings:
     bot_owner_ids: frozenset[int]
     legacy_guild_id: str | None
     app_id: int | None
-    message_content_intent: bool
     backup_dir: Path | None
     backup_keep: int
     backup_max_age_days: int
@@ -103,7 +101,6 @@ class Settings:
 
         return cls(
             discord_token=token,
-            command_prefix=os.getenv("COMMAND_PREFIX", "!").strip() or "!",
             database_path=db_path,
             ocr_vision_base_url=vision_base,
             ocr_vision_model=vision_model,
@@ -121,8 +118,6 @@ class Settings:
                 os.getenv("LEGACY_GUILD_ID", "").strip() or None
             ),
             app_id=_optional_int("DISCORD_APP_ID"),
-            # Requires Privileged Gateway Intent in the Discord Developer Portal
-            message_content_intent=_env_bool("MESSAGE_CONTENT_INTENT", True),
             backup_dir=(
                 Path(os.environ["BACKUP_DIR"])
                 if os.getenv("BACKUP_DIR", "").strip()

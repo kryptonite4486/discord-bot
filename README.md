@@ -4,8 +4,8 @@ Discord bot for Last Z alliances: a modular **discord.py** bot that ingests week
 
 ## Features
 
-- Slash + prefix commands via cogs (`admin`, `ingest`, `ops`, `reports`)
-- Message Content intent for prefix commands and `/ingest batch`
+- Slash commands only, via cogs (`admin`, `data`, `ingest`, `ops`, `reports`)
+- No privileged intents: the bot can't read ordinary messages; `/ingest batch` collects messages that @mention it
 - SQLite fact table `WeeklyMetrics` at `/app/data/weekly.db`, **partitioned per Discord server** (`GuildId`)
 - Manual `/add`, pasted CSV/text `/ingest text`, OCR `/ingest image` / `/ingest zip` / `/ingest batch`
 - Reports: weekly summary, player trends, growth, leaderboards, PNG charts
@@ -13,7 +13,7 @@ Discord bot for Last Z alliances: a modular **discord.py** bot that ingests week
 
 ## Quick start (Docker)
 
-1. Create a Discord application/bot and enable **Message Content Intent**.
+1. Create a Discord application/bot. No privileged intents are needed; leave **Message Content Intent** off.
 2. Invite the bot with `applications.commands` + `bot` scopes (Send Messages, Attach Files, Read Message History).
 3. Configure env:
 
@@ -91,7 +91,7 @@ docker compose up --build -d
 
 ### Admin (server administrators; affects only this server)
 
-`/admin` and `/data` are hidden from members without Administrator, and each command also checks the permission, so widening access under Server Settings → Integrations doesn't let others run them. `!dbstats` requires Administrator too.
+`/admin` and `/data` are hidden from members without Administrator, and each command also checks the permission, so widening access under Server Settings → Integrations doesn't let others run them.
 
 | Command | Description |
 |---------|-------------|
@@ -112,8 +112,6 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops purges` | Servers that removed the bot and when their data will be deleted |
 | `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
 
-`!reload <cog>` and `!sync` do the same from any server, for operators only.
-
 ### Ingestion
 | Command | Description |
 |---------|-------------|
@@ -124,14 +122,14 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/add general <player> <hq> <power> [week]` | Add HQ + Power |
 | `/ingest image <image…> <dataset> [week]` | OCR up to 10 screenshots on this command |
 | `/ingest zip <archive> <dataset> [week]` | OCR every image inside one `.zip` (up to 50) |
-| `/ingest batch <dataset> [week]` | Collect images or `.zip` files across messages (20 images; 50 once a zip is included), then OCR |
+| `/ingest batch <dataset> [week]` | Collect images or `.zip` files from messages that @mention the bot (20 images; 50 once a zip is included), then OCR |
 | `/ingest text <dataset> <data> [week]` | Paste CSV/text rows |
 
 Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunday).
 
-`/ingest image` accepts up to **10** attachment slots (`image` … `image10`) — Discord’s per-message limit. Multi-select on a single slot usually only sends the first file; fill slots separately or use **`/ingest batch`** for larger Versus/Tech dumps (send several messages of up to 10, then type `done`).
+`/ingest image` accepts up to **10** attachment slots (`image` … `image10`) — Discord’s per-message limit. Multi-select on a single slot usually only sends the first file; fill slots separately or use **`/ingest batch`** for larger Versus/Tech dumps: send several messages of up to 10 images, each @mentioning the bot (on a phone you can pick 10 photos at once), then send `@LastZ Assistant done`. Messages that don't @mention the bot are ignored: without the Message Content intent, Discord only shows the bot messages that mention it. Mention the bot itself, not its role.
 
-**Zip uploads.** `/ingest zip` (and `/ingest batch` and `!ingestimage`) accept `.zip` archives of screenshots. Images are processed in filename order, and folders, `__MACOSX/`, dotfiles and non-image files are skipped. Limits: 50 images per run, 20 MB per image and 200 MB in total after unzipping. The zip itself must fit your server's Discord upload limit (10 MB without boosts). Screenshots barely compress, so large sets may need splitting across several zips in `/ingest batch`. Progress is posted as a channel message, and results that finish after Discord's 15-minute interaction window are posted to the channel with a mention.
+**Zip uploads.** `/ingest zip` and `/ingest batch` accept `.zip` archives of screenshots. Images are processed in filename order, and folders, `__MACOSX/`, dotfiles and non-image files are skipped. Limits: 50 images per run, 20 MB per image and 200 MB in total after unzipping. The zip itself must fit your server's Discord upload limit (10 MB without boosts). Screenshots barely compress, so large sets may need splitting across several zips in `/ingest batch`. Progress is posted as a channel message, and results that finish after Discord's 15-minute interaction window are posted to the channel with a mention.
 
 ### Reports
 | Command | Description |
@@ -151,8 +149,6 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 | `/planner plan:<link>` | Repost a plan from the planner's **Share link** button so the channel can open it |
 
 The planner is a separate static site (repo `territory-planner`, hosted on Cloudflare Pages); the bot only links to it. Plans live in the link itself, so the bot stores nothing. `plan` only accepts links on the planner's own address. Override the address with `PLANNER_URL`.
-
-Prefix equivalents use `COMMAND_PREFIX` (default `!`), e.g. `!addversus`, `!addarena`, `!addkills`, `!reportweek`. `!ingestimage <dataset> [week]` requires the dataset.
 
 ## Dataset is always named
 
@@ -276,7 +272,7 @@ docker-compose.yml
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) → New Application → Bot
 2. Copy token → `DISCORD_TOKEN`
-3. Privileged Gateway Intent: **Message Content Intent** = ON
+3. Privileged Gateway Intents: leave all **off** (the bot requests none)
 4. OAuth2 URL Generator: scopes `bot` + `applications.commands`
 5. Permissions: Send Messages, Embed Links, Attach Files, Read Message History, Use Application Commands
-6. Commands register globally on every start. If they are missing or listed twice, run `/ops sync` in the control server (or `!sync` anywhere, operator only). Set `DEV_GUILD_ID` only on a development bot: commands then go to that one server instead, for instant updates
+6. Commands register globally on every start. If they are missing or listed twice, run `/ops sync` in the control server. Set `DEV_GUILD_ID` only on a development bot: commands then go to that one server instead, for instant updates
