@@ -1,5 +1,5 @@
-"""Operator-only commands: reload, sync, backup, queue, purges, usage, and
-gifting plans (grant, revoke, extend, show, list, and gift codes).
+"""Operator-only commands: reload, sync, backup, queue, purges, usage,
+export, and gifting plans (grant, revoke, extend, show, list, and gift codes).
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -10,6 +10,7 @@ is checked again for both the server and the user.
 from __future__ import annotations
 
 import importlib
+import io
 import logging
 import re
 import sys
@@ -21,6 +22,7 @@ from discord.ext import commands
 
 from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
+from bot.utils.export import build_export, upload_limit
 from bot.utils.fair_queue import LEVEL_NAMES, GuildQueueState
 from bot.utils.gift_codes import code_hint, generate_code, hash_code, normalize_code
 from bot.utils.report_channel import ReportChannelUnavailable, send_to_report_channel
@@ -64,6 +66,7 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "bot.cogs.data": (
         "bot.db.database",
         "bot.utils.backup",
+        "bot.utils.export",
         "bot.utils.guild",
         "bot.utils.retention",
     ),
@@ -71,6 +74,7 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.gift_codes",
         "bot.utils.backup",
         "bot.utils.command_sync",
+        "bot.utils.export",
         "bot.utils.retention",
         "bot.utils.report_channel",
     ),
@@ -252,6 +256,10 @@ def format_purges_report(servers: list[RemovedServer], retention_days: int) -> s
     return "\n".join(lines)
 
 
+EXPORT_FORMAT_CHOICES = [
+    app_commands.Choice(name="CSV", value="csv"),
+    app_commands.Choice(name="JSON", value="json"),
+]
 GIFT_TIER_CHOICES = [
     app_commands.Choice(name="Alliance", value="mid"),
     app_commands.Choice(name="Command", value="full"),
@@ -803,6 +811,60 @@ class Ops(commands.Cog):
             )
         await interaction.response.send_message(" ".join(parts), ephemeral=True)
 
+    @ops.command(
+        name="export",
+        description="Export every week of a server's metrics, for deletion or access requests",
+    )
+    @app_commands.describe(
+        guild_id="Server to export (pick from the list, or paste an ID)",
+        format="CSV (default) or JSON",
+    )
+    @app_commands.choices(format=EXPORT_FORMAT_CHOICES)
+    @app_commands.autocomplete(guild_id=_guild_autocomplete)
+    async def export(
+        self,
+        interaction: discord.Interaction,
+        guild_id: str,
+        format: app_commands.Choice[str] | None = None,
+    ) -> None:
+        # Hands over another server's data, so check the operator again here
+        # rather than relying only on interaction_check.
+        if not is_operator(self.bot, interaction.user.id):
+            log.warning("Refused /ops export from user %s", interaction.user.id)
+            await interaction.response.send_message(NOT_OPERATOR_MESSAGE, ephemeral=True)
+            return
+        guild_id = parse_guild_id(guild_id)
+        if not guild_id.isdigit():
+            await interaction.response.send_message("That isn't a server ID.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        fmt = format.value if format else "csv"
+        # Every week and channel, whatever the server's plan: the operator
+        # needs the full data for deletion and access requests.
+        target = self.bot.get_guild(int(guild_id))
+        result = await build_export(
+            self.bot.db, guild_id, target, fmt=fmt, limit=upload_limit(interaction.guild)
+        )
+        label = f"**{target.name if target else 'Unknown server (bot not in it)'}** `{guild_id}`"
+        if result is None:
+            await interaction.followup.send(
+                f"The export for {label} is too big to upload here even zipped. "
+                "Use `/ops backup` and query the backup on the host.",
+                ephemeral=True,
+            )
+            return
+        log.warning("/ops export by %s: %d row(s) for guild %s as %s",
+                    interaction.user, result.rows, guild_id, result.filename)
+        if not result.rows:
+            await interaction.followup.send(f"Nothing is stored for {label}.", ephemeral=True)
+            return
+        zipped = " (zipped)" if result.zipped else ""
+        await interaction.followup.send(
+            f"**{result.rows}** row(s) for {label}, every week and channel{zipped}.",
+            file=discord.File(io.BytesIO(result.data), filename=result.filename),
+            ephemeral=True,
+        )
+
     @ops.command(name="purges", description="Servers that removed the bot and when their data will be deleted")
     async def purges(self, interaction: discord.Interaction) -> None:
         days = self.bot.settings.data_retention_days
@@ -835,7 +897,7 @@ async def setup(bot: commands.Bot) -> None:
     if not s.bot_owner_ids or not s.control_guild_id:
         log.warning(
             "BOT_OWNER_IDS or CONTROL_GUILD_ID is not set; operator commands "
-            "(/ops reload, sync, backup, queue, purges, usage) are disabled"
+            "(/ops reload, sync, backup, queue, purges, usage, export) are disabled"
         )
         return
     # guild= registers every slash command in this cog to the control server

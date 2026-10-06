@@ -1228,6 +1228,41 @@ class Database:
             rows = await cursor.fetchall()
         return [(str(r["Day"]), float(r["total"])) for r in rows]
 
+    async def export_metrics(
+        self,
+        guild_id: str,
+        *,
+        channel_id: str | None = None,
+        from_week: str | None = None,
+        to_week: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """A server's metric rows for /data export, oldest week first.
+
+        ``channel_id`` None means every row in the server, unassigned ones
+        included (the same rows /data delete removes). Weeks are inclusive.
+        """
+        clauses = ["GuildId = ?"]
+        params: list[Any] = [guild_id]
+        if channel_id is not None:
+            clauses.append("ChannelId = ?")
+            params.append(channel_id)
+        if from_week is not None:
+            clauses.append("WeekStart >= ?")
+            params.append(from_week)
+        if to_week is not None:
+            clauses.append("WeekStart <= ?")
+            params.append(to_week)
+        async with self.conn.execute(
+            f"""
+            SELECT PlayerName, MetricType, Value, WeekStart, ChannelId, UpdatedAt
+            FROM WeeklyMetrics
+            WHERE {' AND '.join(clauses)}
+            ORDER BY WeekStart, ChannelId, PlayerName COLLATE NOCASE, MetricType
+            """,
+            params,
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
     async def delete_guild_data(
         self, guild_id: str, *, channel_id: str | None = None
     ) -> int:

@@ -7,11 +7,12 @@ nothing. While the server has an active subscription (paid, gifted or
 trial) its data is kept however long the bot has been gone; the retention
 period starts when the bot is removed or the subscription ends, whichever
 is later. Server admins can also delete their data immediately with
-/data delete.
+/data delete, or download it with /data export (bot/utils/export.py).
 """
 
 from __future__ import annotations
 
+import io
 import logging
 from datetime import datetime, timedelta
 
@@ -20,6 +21,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from bot.utils.backup import create_backup
+from bot.utils.export import build_export, upload_limit
 from bot.utils.guild import (
     channel_display_name,
     channel_id_from_interaction,
@@ -33,6 +35,8 @@ from bot.utils.retention import (
     removed_servers,
     utc_now,
 )
+from bot.utils.parsing import parse_week_start
+from bot.utils.tiers import FeatureLocked, hidden_weeks_note, requires_feature
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +44,21 @@ SCOPE_CHOICES = [
     app_commands.Choice(name="This channel", value="channel"),
     app_commands.Choice(name="Entire server", value="server"),
 ]
+FORMAT_CHOICES = [
+    app_commands.Choice(name="CSV (spreadsheets)", value="csv"),
+    app_commands.Choice(name="JSON", value="json"),
+]
+_WEEK_HELP = "YYYY-MM-DD (any day of the week), 'current' or 'last'"
+
+
+def week_range_text(from_week: str | None, to_week: str | None) -> str:
+    if from_week and to_week:
+        return f" for weeks {from_week} to {to_week}"
+    if from_week:
+        return f" from week {from_week}"
+    if to_week:
+        return f" up to week {to_week}"
+    return ""
 
 
 class ConfirmDeleteView(discord.ui.View):
@@ -251,11 +270,112 @@ class Data(commands.Cog):
             content=f"Deleted **{rows}** row(s) for {where}.{backup_note}"
         )
 
+    # --- Export ----------------------------------------------------------------
+
+    @data.command(name="export", description="Download this channel's or this server's metrics as CSV or JSON")
+    @app_commands.describe(
+        scope="This channel (default) or the entire server",
+        format="CSV (default) or JSON",
+        from_week=f"Oldest week to include: {_WEEK_HELP}",
+        to_week=f"Newest week to include: {_WEEK_HELP}",
+    )
+    @app_commands.choices(scope=SCOPE_CHOICES, format=FORMAT_CHOICES)
+    @app_commands.checks.has_permissions(administrator=True)
+    @requires_feature("export")
+    async def export(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str] | None = None,
+        format: app_commands.Choice[str] | None = None,
+        from_week: str | None = None,
+        to_week: str | None = None,
+    ) -> None:
+        guild_id = guild_id_from_interaction(interaction)
+        server = scope is not None and scope.value == "server"
+        channel_id = None if server else channel_id_from_interaction(interaction)
+        fmt = format.value if format else "csv"
+        try:
+            start = parse_week_start(from_week) if from_week else None
+            end = parse_week_start(to_week) if to_week else None
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        if start and end and start > end:
+            await interaction.response.send_message(
+                "`from_week` is after `to_week`.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Exports show the same weeks as reports: older weeks outside the
+        # plan's history window are left out and named in a note. Operator
+        # exports (/ops export) skip this; see docs/monetization-plan.md.
+        note = ""
+        tiers = getattr(self.bot, "tiers", None)
+        if tiers is not None:
+            min_week, status = await tiers.history_window(guild_id)
+            if min_week is not None and (start is None or start < min_week):
+                hidden = [
+                    w
+                    for w in await self.bot.db.hidden_weeks(
+                        guild_id, min_week, channel_id=channel_id
+                    )
+                    if (start is None or w >= start) and (end is None or w <= end)
+                ]
+                note = hidden_weeks_note(hidden, status)
+                start = min_week
+
+        where = (
+            "this **entire server**"
+            if server
+            else channel_display_name(interaction.guild, channel_id)
+        )
+        weeks = week_range_text(start, end)
+        result = None
+        if start is None or end is None or start <= end:  # the window can pass to_week
+            result = await build_export(
+                self.bot.db, guild_id, interaction.guild, fmt=fmt,
+                channel_id=channel_id, from_week=start, to_week=end,
+            )
+            if result is None:
+                limit_mb = upload_limit(interaction.guild) / (1024 * 1024)
+                await interaction.followup.send(
+                    f"The export for {where}{weeks} is over this server's "
+                    f"{limit_mb:.0f} MB upload limit even zipped. Export one channel "
+                    "at a time, or fewer weeks with `from_week` and `to_week`.",
+                    ephemeral=True,
+                )
+                return
+        if result is None or not result.rows:
+            text = f"Nothing is stored for {where}{weeks}."
+            await interaction.followup.send(
+                text + (f"\n{note}" if note else ""), ephemeral=True
+            )
+            return
+
+        rows = result.rows
+        log.info(
+            "/data export by %s (%s): %d row(s) as %s, guild %s channel %s, weeks %s..%s",
+            interaction.user, interaction.user.id, rows, result.filename,
+            guild_id, channel_id or "ALL", start or "start", end or "latest",
+        )
+        zipped = " (zipped to fit Discord's upload limit)" if result.zipped else ""
+        text = f"**{rows}** row(s) for {where}{weeks}{zipped}."
+        if note:
+            text += f"\n{note}"
+        await interaction.followup.send(
+            text,
+            file=discord.File(io.BytesIO(result.data), filename=result.filename),
+            ephemeral=True,
+        )
+
     async def cog_app_command_error(
         self,
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
+        if isinstance(error, FeatureLocked):
+            return  # the upgrade message was already sent
         if isinstance(error, app_commands.MissingPermissions):
             text = "You need administrator permission for this command."
         else:

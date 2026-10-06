@@ -100,6 +100,7 @@ docker compose up --build -d
 | `/admin duplicates` | List player names stored under several spellings |
 | `/admin rename-player` | Move a player's rows to the correct spelling |
 | `/data delete [scope]` | Permanently delete this channel's metrics, or the entire server's with `scope:Entire server`. Shows what will be deleted and asks for confirmation; a backup is taken first |
+| `/data export [scope] [format] [from_week] [to_week]` | Download this channel's metrics, or the entire server's with `scope:Entire server`, as CSV (default) or JSON: player, metric, value, week, channel name and ID, and when the row was last updated. Weeks are inclusive and accept `YYYY-MM-DD`, `current` or `last`. Sent privately to you; zipped if it's over the server's upload limit. Alliance and Command plans; it shows the same weeks as reports, so older weeks outside the plan's history window are left out and named |
 
 ### Setup (Manage Server)
 
@@ -134,6 +135,7 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops backup` | Write a database backup now |
 | `/ops queue` | Live OCR queue: requests running and waiting per server, and how long the oldest has waited |
 | `/ops purges` | Servers that removed the bot and when their data will be deleted |
+| `/ops export <server> [format]` | Every week and channel of a server's metrics as CSV or JSON, whatever its plan, for deletion and access requests. Works after the bot has been removed, until the data is purged |
 | `/ops grant <server> <tier> <duration> <reason> [notify]` | Gift Alliance or Command to a server for 30 days, 90 days, 1 year or permanently. `notify:True` posts a thank-you in the server's report channel (the reason isn't shown); if it can't (no report channel, or no permission), the reply says why and the gift still applies |
 | `/ops revoke <server> <reason> [entitlement]` | Revoke a server's active gifts (or one entitlement); paid subscriptions can't be revoked here |
 | `/ops extend <entitlement> <duration>` | Extend a gift, or make it permanent |
@@ -188,9 +190,10 @@ Each server is on **Free**, **Alliance** or **Command**: the highest plan among 
 | `/ingest zip`, `/ingest batch` | Alliance |
 | `/report player`, `/report trend`, `/report growth` | Alliance |
 | `/admin duplicates`, `/admin rename-player` | Alliance |
+| `/data export` | Alliance |
 | Reports over more than one channel | Command |
 
-Older weeks are hidden from reports, never deleted: upgrading shows them again. When a report leaves weeks out it ends with a 🔒 note saying how many and which plan shows them.
+Older weeks are hidden from reports, never deleted: upgrading shows them again. When a report leaves weeks out it ends with a 🔒 note saying how many and which plan shows them. `/data export` follows the same window (`/ops export` doesn't).
 
 **Channel limit.** Each channel is its own dataset. `/add` and every `/ingest` command refuse to start data in a channel past the plan's limit, and the reply names the channels that can take data. Data is never deleted for being over the limit. A server with more channels than its plan allows (after a downgrade, or data added before limits were on) keeps reports for all of them, but only its most recently written channels take new data: the 1 (Free) or 3 (Alliance) whose latest row is newest. Upgrading makes every channel writable again. Rows without a channel (legacy leftovers) don't count.
 
@@ -271,7 +274,7 @@ When the bot is removed from a server (kicked, banned, or the server deleted), t
 
 `PendingPurge (GuildId, RemovedAt)` records removals; the deletion date is worked out from it and the server's subscriptions at each hourly check, so renewals and cancellations apply without rescheduling. A backup is taken before each scheduled deletion, and if the backup fails the deletion waits for the next hour. Servers that removed the bot while it was offline are found at startup and treated as removed from then. `/ops purges` lists removed servers and their deletion dates ("kept: subscribed" while a subscription is active).
 
-Server admins can delete data immediately with `/data delete` (one channel, or the whole server).
+Server admins can delete data immediately with `/data delete` (one channel, or the whole server), and download it first with `/data export`. Exports hold only metrics (`WeeklyMetrics`); trivia scores, settings, entitlements and usage counters aren't included. For a deletion or access request, `/ops export` gives the operator the full history of any server.
 
 Trivia keeps totals per player per server in `TriviaScore (GuildId, UserId, Mode, DisplayName, GuildName, Points, Correct, Answered, Games, Wins)`, with `Mode` `server` or `global` (a cross-server player's points count for the server they played from), and the cross-server switch in `TriviaSettings (GuildId, AllowGlobal)`; the trivia channel is in `GuildSettings` (see `/setup`). All three follow the same removal retention as metrics. `/trivia reset` deletes a server's trivia scores; `/data delete` doesn't touch them.
 
