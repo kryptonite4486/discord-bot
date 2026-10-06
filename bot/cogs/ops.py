@@ -1,5 +1,6 @@
 """Operator-only commands: reload, sync, backup, queue, purges, usage, and
-gifting plans (grant, revoke, extend, show, list, and gift codes).
+gifting plans (grant, revoke, extend, show, list, gift codes, and resetting
+a server's free trial).
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -320,6 +321,7 @@ def format_show(
     audit: list[dict],
     used: int,
     now: str,
+    trial_claimed_at: str | None = None,
 ) -> str:
     active = [r for r in rows if not r["RevokedAt"] and r["StartsAt"] <= now
               and (r["EndsAt"] is None or r["EndsAt"] > now)]
@@ -328,6 +330,8 @@ def format_show(
         f"**{name or 'Unknown server (bot not in it)'}** `{guild_id}`",
         f"Plan: **{status.describe()}** · screenshots this week: "
         f"{used}/{status.policy.ocr_images_per_week}",
+        f"Free trial: started {trial_claimed_at[:10]}" if trial_claimed_at
+        else "Free trial: not used (available)",
     ]
     lines.append("**Entitlements**" if rows else "No entitlements.")
     lines += [f"• {_entitlement_line(r, now)}" for r in rows[:15]]
@@ -691,11 +695,56 @@ class Ops(commands.Cog):
         rows = await self.bot.db.entitlements_for(guild_id)
         audit = await self.bot.db.entitlement_audit(guild_id)
         used = await self.bot.tiers.ocr_used_this_week(guild_id)
+        trial = await self.bot.db.trial_claimed_at(guild_id)
         await interaction.response.send_message(
             format_show(guild_id, self._guild_name(guild_id), rows, audit, used,
-                        self._now().strftime(_TS)),
+                        self._now().strftime(_TS), trial),
             ephemeral=True,
         )
+
+    @ops.command(name="trial-reset", description="Let a server start its free trial again")
+    @app_commands.describe(
+        guild_id="Server whose trial to reset (pick from the list, or paste an ID)",
+        reason="Why (kept in the audit log)",
+    )
+    @app_commands.autocomplete(guild_id=_guild_autocomplete)
+    async def trial_reset(self, interaction: discord.Interaction, guild_id: str, reason: str) -> None:
+        # interaction_check has already checked this; check again so a
+        # change to the cog check can't open this up.
+        if not is_operator(self.bot, interaction.user.id):
+            log.warning("Refused /ops trial-reset from user %s", interaction.user.id)
+            await interaction.response.send_message(NOT_OPERATOR_MESSAGE, ephemeral=True)
+            return
+        guild_id = parse_guild_id(guild_id)
+        if not guild_id.isdigit():
+            await interaction.response.send_message("That isn't a server ID.", ephemeral=True)
+            return
+        name = self._guild_name(guild_id) or guild_id
+        claimed = await self.bot.db.reset_trial(
+            guild_id, actor_id=str(interaction.user.id), reason=reason
+        )
+        if claimed is None:
+            await interaction.response.send_message(
+                f"**{name}** hasn't used its free trial, so there's nothing to reset.",
+                ephemeral=True,
+            )
+            return
+        log.warning("Trial eligibility reset for guild %s by %s (%s)", guild_id, interaction.user, reason)
+        text = (
+            f"Reset: **{name}** can start a free trial again from `/premium` "
+            f"(its last one started {claimed[:10]})."
+        )
+        running = [
+            r for r in await self.bot.db.active_entitlements(guild_id, self._now().strftime(_TS))
+            if r["Source"] == "trial"
+        ]
+        if running:
+            text += (
+                f"\nIts trial #{running[0]['Id']} is still running until "
+                f"{running[0]['EndsAt'][:10]}; a new one can start once it ends "
+                "(or `/ops revoke` it)."
+            )
+        await interaction.response.send_message(text, ephemeral=True)
 
     @ops.command(name="list", description="Active entitlements across servers")
     @app_commands.describe(expiring_within="Only those ending within this many days")

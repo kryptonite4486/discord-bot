@@ -46,9 +46,9 @@
           <td>Capacity planning, fair queuing and usage limits. No player data.</td>
         </tr>
         <tr>
-          <td><strong>Subscription records</strong> (once subscriptions are offered): which server, which plan, and start and end dates</td>
-          <td>Discord, or us for gifted plans</td>
-          <td>To provide paid features. We never see payment details: Discord handles payments.</td>
+          <td><strong>Subscription records</strong>: which server, which plan (paid once subscriptions are offered, gifted, or a free trial), start and end dates, and the Discord user ID of whoever redeemed a gift code or started a trial</td>
+          <td>Discord, or us for gifted plans; the bot when a server admin starts a free trial or redeems a code</td>
+          <td>To provide paid features, and to keep the free trial to one per server. We never see payment details: Discord handles payments.</td>
         </tr>
         <tr>
           <td><strong>Operational logs</strong>: commands run, errors, and processing details. These can include the Discord username and ID of the person who ran an admin command, player names, and uploaded file names.</td>
@@ -79,6 +79,8 @@
         <tr><td>The bot is removed, but the server has an active subscription</td><td>Data is kept while the subscription is active, then for 30 days after it ends.</td></tr>
         <tr><td>Backups</td><td>Kept for at most <strong>30 days</strong>, so deleted data is gone from backups within 30 days of being deleted.</td></tr>
         <tr><td>Usage counts</td><td>Kept, because they contain no player data.</td></tr>
+        <tr><td>Subscription records</td><td>Kept, including after <code>/data delete</code> or the bot's removal, as a record of what each server was entitled to. They contain no player data.</td></tr>
+        <tr><td>Free trial record</td><td>The server's ID and the date its free trial started are kept even after <code>/data delete</code> or the bot's removal, so each server gets only one trial.</td></tr>
         <tr><td>Operational logs</td><td>Kept in size-limited files that are overwritten as new entries are written.</td></tr>
       </table>
     </div>

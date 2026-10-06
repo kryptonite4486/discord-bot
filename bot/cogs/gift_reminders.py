@@ -1,4 +1,4 @@
-"""Daily gift expiry reminders (see bot/utils/gift_reminders.py)."""
+"""Daily gift and trial expiry reminders (see bot/utils/gift_reminders.py)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 
 class GiftReminderTask(commands.Cog):
-    """Reminds operators and gifted servers before gifts expire."""
+    """Reminds operators and servers before gifts and trials expire."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot

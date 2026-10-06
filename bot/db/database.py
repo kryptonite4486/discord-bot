@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS EntitlementAudit (
     At      TEXT NOT NULL DEFAULT (datetime('now')),
     ActorId TEXT,
     Action  TEXT NOT NULL,  -- grant | revoke | extend | redeem | code_create | code_revoke
+                            -- | trial | trial_reset
     GuildId TEXT NOT NULL,  -- '' for code_create and code_revoke
     Detail  TEXT
 );
@@ -111,6 +112,15 @@ CREATE TABLE IF NOT EXISTS GiftCodeRedemption (
     EntitlementId INTEGER NOT NULL,
     RedeemedAt    TEXT    NOT NULL,
     PRIMARY KEY (CodeId, GuildId)
+);
+
+-- Servers that have started their free trial (/premium), one row each.
+-- This is what keeps the trial to once per server. It's deliberately not
+-- removed by /data delete or the purge after the bot is removed, and holds
+-- only the server ID and when the trial started. /ops trial-reset deletes it.
+CREATE TABLE IF NOT EXISTS TrialClaim (
+    GuildId   TEXT PRIMARY KEY,
+    ClaimedAt TEXT NOT NULL
 );
 
 -- Gift expiry reminders already sent (bot/utils/gift_reminders.py), one row
@@ -1315,7 +1325,9 @@ class Database:
     async def purge_guild(self, guild_id: str) -> int:
         """Delete a server's metrics and trivia data and clear its schedule.
 
-        Returns metric rows removed.
+        Entitlements, their audit trail and TrialClaim are kept: they say
+        what the server was entitled to, and stop a re-added server from
+        starting a second free trial. Returns metric rows removed.
         """
         async with self._write_lock:
             cursor = await self.conn.execute(
@@ -1463,6 +1475,97 @@ class Database:
             "INSERT INTO EntitlementAudit (ActorId, Action, GuildId, Detail) VALUES (?, ?, ?, ?)",
             (actor_id, action, guild_id, detail),
         )
+
+    # --- Free trials (/premium, /ops trial-reset) ---------------------------
+
+    async def trial_claimed_at(self, guild_id: str) -> str | None:
+        """When this server started its free trial; None if it hasn't."""
+        async with self.conn.execute(
+            "SELECT ClaimedAt FROM TrialClaim WHERE GuildId = ?", (guild_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["ClaimedAt"] if row else None
+
+    async def start_trial(
+        self, guild_id: str, user_id: str, *, tier: str, days: int, now: datetime
+    ) -> tuple[str, dict[str, Any]]:
+        """Start a server's one free trial: a Source='trial' entitlement.
+
+        Returns (outcome, details). Outcome is 'ok' (details: entitlement_id,
+        ends_at), 'claimed' (the server already had its trial; details:
+        claimed_at) or 'covered' (an active entitlement already gives
+        ``tier``; details: the entitlement row, and the trial stays unused).
+
+        Race-safe like redeem_gift_code: the write lock serializes starts in
+        this process, and TrialClaim's key stops a second claim from another
+        connection.
+        """
+        now_s = now.strftime(_TS)
+        async with self._write_lock:
+            async with self.conn.execute(
+                "SELECT ClaimedAt FROM TrialClaim WHERE GuildId = ?", (guild_id,)
+            ) as cursor:
+                claim = await cursor.fetchone()
+            if claim is not None:
+                return "claimed", {"claimed_at": claim["ClaimedAt"]}
+            async with self.conn.execute(
+                f"SELECT * FROM GuildEntitlement WHERE GuildId = :guild AND Tier = :tier "
+                f"AND {self._ACTIVE_SQL} ORDER BY EndsAt IS NULL DESC, EndsAt DESC LIMIT 1",
+                {"guild": guild_id, "tier": tier, "now": now_s},
+            ) as cursor:
+                covering = await cursor.fetchone()
+            if covering is not None:
+                return "covered", {"entitlement": dict(covering)}
+            ends_at = (now + timedelta(days=days)).strftime(_TS)
+            try:
+                await self.conn.execute(
+                    "INSERT INTO TrialClaim (GuildId, ClaimedAt) VALUES (?, ?)",
+                    (guild_id, now_s),
+                )
+                cursor = await self.conn.execute(
+                    """
+                    INSERT INTO GuildEntitlement
+                        (GuildId, Tier, Source, StartsAt, EndsAt, GrantedBy, Reason)
+                    VALUES (?, ?, 'trial', ?, ?, ?, ?)
+                    """,
+                    (guild_id, tier, now_s, ends_at, user_id, f"{days}-day free trial"),
+                )
+                entitlement_id = int(cursor.lastrowid)
+                await self._audit(
+                    user_id, "trial", guild_id,
+                    f"#{entitlement_id} {tier} trial until {ends_at}",
+                )
+                await self.conn.commit()
+            except aiosqlite.IntegrityError:
+                await self.conn.rollback()
+                return "claimed", {"claimed_at": await self.trial_claimed_at(guild_id)}
+            except BaseException:
+                await self.conn.rollback()
+                raise
+        return "ok", {"entitlement_id": entitlement_id, "ends_at": ends_at}
+
+    async def reset_trial(
+        self, guild_id: str, *, actor_id: str | None, reason: str | None
+    ) -> str | None:
+        """Let a server start a free trial again; return when its last one
+        started, or None if it never had one (nothing changes then).
+
+        Any trial still running is left alone (revoke it separately).
+        """
+        async with self._write_lock:
+            async with self.conn.execute(
+                "SELECT ClaimedAt FROM TrialClaim WHERE GuildId = ?", (guild_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            await self.conn.execute("DELETE FROM TrialClaim WHERE GuildId = ?", (guild_id,))
+            await self._audit(
+                actor_id, "trial_reset", guild_id,
+                f"trial started {row['ClaimedAt']}: {reason or ''}".strip(),
+            )
+            await self.conn.commit()
+        return row["ClaimedAt"]
 
     # --- Gift codes (/ops code, /redeem) ------------------------------------
 
