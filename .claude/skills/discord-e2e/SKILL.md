@@ -46,8 +46,19 @@ sent **as them**, so these rules are not optional.
   entry. Fill each option by clicking it or pressing Tab, typing the value, and
   choosing from the list, then press Enter. Take a screenshot before Enter to
   check the options.
-- **@mention:** type `@LastZ` and pick the entry marked **APP/BOT** (the bot
-  user), **not** the role with the same name. A role mention doesn't count.
+- **@mention:** type `@LastZ` and click the **LastZ Assistant** member entry
+  (the bot user, `LastZ Assistant#7201`), **not** the `@LastZ Metrics` role
+  below it. A role mention doesn't count.
+- **Before pressing Enter on a message that @mentions the bot**, press
+  **Escape**: Discord opens a "Commands matching @LastZ Assistant …" list,
+  and Enter would run the highlighted command (e.g. `/ops purges`) instead of
+  sending the message. Screenshot to check the list is gone.
+- **Optional slash options:** when Discord shows an "Options" list you don't
+  need (e.g. `scope` on `/data delete`), press Escape, then Enter, to use the
+  defaults.
+- **Coordinates:** with the 1280x800 viewport the page is drawn scaled into
+  the top-left of an 800x500 screenshot frame; the message box sits around
+  (260, 253). Take a screenshot before clicking and use what it shows.
 - **Attach a screenshot.** The pane blocks pages from fetching files from this
   Mac, so the image goes inside the script. Encode the fixture:
 
@@ -55,15 +66,26 @@ sent **as them**, so these rules are not optional.
   base64 -i tests/e2e/general_profile_small.jpg | tr -d '\n'
   ```
 
-  then run with `javascript_tool`, pasting the output in place of `B64`:
+  then run with `javascript_tool`, pasting the output in place of `B64`. The
+  script refuses to attach unless the bytes match the fixture exactly: copying
+  15,000 characters by hand can drop one, and a damaged image gives a
+  misleading OCR result.
 
   ```js
   const bytes = Uint8Array.from(atob("B64"), c => c.charCodeAt(0));
-  const dt = new DataTransfer();
-  dt.items.add(new File([bytes], "general_profile_small.jpg", {type: "image/jpeg"}));
-  const input = document.querySelector('input[type=file]');
-  input.files = dt.files;
-  input.dispatchEvent(new Event('change', {bubbles: true}));
+  const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+  const expected = "3a7149042b7e29c9cccf425cedf1ed960ca3979b9b2148d5502e4920e58ca374";  // shasum -a 256 tests/e2e/general_profile_small.jpg
+  if (bytes.length !== 11688 || hash !== expected) {
+    ({ok: false, bytes: bytes.length, hash});  // re-encode and paste again
+  } else {
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], "general_profile_small.jpg", {type: "image/jpeg"}));
+    const input = document.querySelector('input[type=file]');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+    ({ok: true});
+  }
   ```
 
   The file appears as a draft attachment above the message box; type the
@@ -73,10 +95,11 @@ sent **as them**, so these rules are not optional.
 
 ## Verify
 
-Bot logs since the run started (replace the time):
+Bot logs for the run. Use a relative window, or end the timestamp with `Z`:
+without it Docker reads the time as local, not UTC, and returns nothing.
 
 ```bash
-docker compose logs --since 2026-10-06T03:00:00 --no-color | grep -vE "voice will NOT|OCR batch progress"
+docker compose logs --since 20m --no-color | grep -vE "voice will NOT|OCR batch progress"
 ```
 
 Database (read-only):
@@ -97,7 +120,8 @@ Run the ones the user asks for; "all" means this list in order.
    message with the fixture attached and an @mention of the bot, then
    `@LastZ Assistant done`.
    - Discord: the "Batch OCR armed" message, ✅ on the upload message, a batch summary.
-   - Logs: `Batch OCR starting`, `OCR batch start: 1 image(s)`, `rows=2`.
+   - Logs: `Batch OCR starting`, `OCR batch start: 1 image(s)`,
+     `Vision OCR kind=general rows=1 metrics=2`, `OCR saved 2 rows`.
    - DB: PrincessPea `HQLevel` 24 and `Power` 65400000 for this week; a
      `UsageLedger` row with `ocr_images` 1.
 3. **Batch, missed mention:** `/ingest batch dataset:general`, then the fixture
@@ -107,8 +131,13 @@ Run the ones the user asks for; "all" means this list in order.
    - Logs: `Batch ignored a message without a bot mention`.
 4. **Operator views:** `/ops queue` shows "0/1 slot(s) busy"; `/ops usage`
    lists LastZ Bot Control Server after test 2.
-5. **Cleanup (always):** `/data delete` (scope: This channel), click **Delete
-   permanently**. Logs: `/data delete by …`. DB: no rows left for this channel.
+5. **Cleanup (always):** `/data delete` (default scope: this channel). Check
+   the confirmation names #bot-testing and only the test rows, then click
+   **Delete permanently**. Logs: `Database backup written` then
+   `/data delete by …`. DB: no rows left for the control server, and the other
+   servers' row counts unchanged.
+
+Last full run: 2026-10-06, all five passed.
 
 Finish with a short pass/fail table per case, quoting the log line or database
 row that proves each result.
