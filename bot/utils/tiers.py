@@ -1,0 +1,246 @@
+"""Subscription tiers: what each tier allows, and which tier a server has.
+
+A server's tier is the highest tier among its active entitlements (paid,
+gifted, trial or code; see GuildEntitlement), or Free with none. Limits are
+only enforced when TIERS_ENFORCED is on; otherwise every check passes and
+the bot logs what it would have blocked, so tiers can be rolled out (and
+gifts granted) before anyone loses access.
+
+See docs/monetization-plan.md, sections 3 and 5.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+
+from discord import app_commands
+
+log = logging.getLogger(__name__)
+
+# Features gated by tier. Only features that exist in the bot are listed;
+# add a key here and to the tiers below when a new paid feature ships.
+FEATURE_NAMES = {
+    "zip_batch": "`/ingest zip` and `/ingest batch`",
+    "advanced_reports": "`/report player`, `/report trend` and `/report growth`",
+    "name_tools": "`/admin duplicates` and `/admin rename-player`",
+    "multi_channel_reports": "reports covering more than one channel",
+}
+
+
+@dataclass(frozen=True)
+class TierPolicy:
+    key: str  # stored in GuildEntitlement.Tier ('free' is never stored)
+    name: str  # shown to users
+    rank: int
+    ocr_images_per_week: int
+    features: frozenset[str] = field(default_factory=frozenset)
+
+    def allows(self, feature: str) -> bool:
+        return feature in self.features
+
+
+FREE = TierPolicy("free", "Free", 0, ocr_images_per_week=25)
+MID = TierPolicy(
+    "mid",
+    "Alliance",
+    1,
+    ocr_images_per_week=250,
+    features=frozenset({"zip_batch", "advanced_reports", "name_tools"}),
+)
+FULL = TierPolicy(
+    "full",
+    "Command",
+    2,
+    ocr_images_per_week=1000,
+    features=MID.features | {"multi_channel_reports"},
+)
+TIERS = {t.key: t for t in (FREE, MID, FULL)}
+PAID_TIERS = (MID, FULL)
+
+SOURCE_NAMES = {
+    "discord": "subscribed",
+    "stripe": "subscribed",
+    "gift": "gifted",
+    "trial": "trial",
+    "code": "code",
+}
+
+
+def lowest_tier_with(feature: str) -> TierPolicy:
+    return next(t for t in (FREE, MID, FULL) if t.allows(feature))
+
+
+def quota_week_start(now: datetime | None = None) -> date:
+    """Sunday (UTC) that starts the current OCR quota week."""
+    today = (now or datetime.now(timezone.utc)).date()
+    return today - timedelta(days=(today.weekday() + 1) % 7)
+
+
+@dataclass(frozen=True)
+class TierStatus:
+    policy: TierPolicy
+    source: str | None = None  # source of the entitlement giving the tier
+    ends_at: str | None = None  # None: no end date (or Free)
+
+    def describe(self) -> str:
+        """e.g. 'Command — gifted until 2027-01-01' or 'Free'."""
+        if self.source is None:
+            return self.policy.name
+        how = SOURCE_NAMES.get(self.source, self.source)
+        until = f" until {self.ends_at[:10]}" if self.ends_at else ""
+        return f"{self.policy.name} — {how}{until}"
+
+
+def status_from_entitlements(rows: list[dict]) -> TierStatus:
+    """Highest active entitlement wins; ties go to the one lasting longest."""
+    best: TierStatus = TierStatus(FREE)
+    for row in rows:
+        policy = TIERS.get(row["Tier"])
+        if policy is None or policy is FREE:
+            continue
+        candidate = TierStatus(policy, row["Source"], row["EndsAt"])
+        if policy.rank > best.policy.rank or (
+            policy.rank == best.policy.rank and _lasts_longer(candidate, best)
+        ):
+            best = candidate
+    return best
+
+
+def _lasts_longer(a: TierStatus, b: TierStatus) -> bool:
+    if a.ends_at is None:
+        return b.ends_at is not None
+    return b.ends_at is not None and a.ends_at > b.ends_at
+
+
+class Tiers:
+    """Tier lookups with a short cache, feature checks and the OCR quota."""
+
+    CACHE_SECONDS = 60.0
+
+    def __init__(self, db, *, enforced: bool) -> None:
+        self.db = db
+        self.enforced = enforced
+        self._cache: dict[str, tuple[float, TierStatus]] = {}
+        self._ocr_in_flight: dict[str, int] = {}
+
+    def invalidate(self, guild_id: str | None = None) -> None:
+        if guild_id is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(guild_id, None)
+
+    async def status(self, guild_id: str) -> TierStatus:
+        hit = self._cache.get(guild_id)
+        if hit and time.monotonic() - hit[0] < self.CACHE_SECONDS:
+            return hit[1]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        status = status_from_entitlements(await self.db.active_entitlements(guild_id, now))
+        self._cache[guild_id] = (time.monotonic(), status)
+        return status
+
+    async def check_feature(self, guild_id: str, feature: str) -> tuple[bool, TierStatus]:
+        """(allowed, status). Not enforced: always allowed, but logged."""
+        status = await self.status(guild_id)
+        if status.policy.allows(feature):
+            return True, status
+        if not self.enforced:
+            log.info(
+                "Tier check (not enforced): guild %s on %s would need %s for %s",
+                guild_id,
+                status.policy.name,
+                lowest_tier_with(feature).name,
+                feature,
+            )
+            return True, status
+        return False, status
+
+    async def ocr_used_this_week(self, guild_id: str) -> int:
+        since = quota_week_start().isoformat()
+        return int(await self.db.usage_total(guild_id, since, "ocr_images"))
+
+    async def reserve_ocr(self, guild_id: str, wanted: int) -> tuple[int, int, int]:
+        """Reserve up to ``wanted`` OCR images; return (allowed, used, limit).
+
+        ``used`` counts this week's finished images plus ones still being
+        processed. Call release_ocr(guild_id, allowed) once the batch is done.
+        """
+        status = await self.status(guild_id)
+        limit = status.policy.ocr_images_per_week
+        used = await self.ocr_used_this_week(guild_id) + self._ocr_in_flight.get(guild_id, 0)
+        allowed = max(0, min(wanted, limit - used))
+        if allowed < wanted and not self.enforced:
+            log.info(
+                "OCR quota (not enforced): guild %s on %s would get %d of %d image(s) "
+                "(%d/%d used this week)",
+                guild_id,
+                status.policy.name,
+                allowed,
+                wanted,
+                used,
+                limit,
+            )
+            allowed = wanted
+        self._ocr_in_flight[guild_id] = self._ocr_in_flight.get(guild_id, 0) + allowed
+        return allowed, used, limit
+
+    def release_ocr(self, guild_id: str, reserved: int) -> None:
+        left = self._ocr_in_flight.get(guild_id, 0) - reserved
+        if left > 0:
+            self._ocr_in_flight[guild_id] = left
+        else:
+            self._ocr_in_flight.pop(guild_id, None)
+
+
+def upgrade_message(feature: str, status: TierStatus) -> str:
+    needed = lowest_tier_with(feature)
+    return (
+        f"🔒 {FEATURE_NAMES.get(feature, feature)} need the **{needed.name}** plan "
+        f"or higher. This server is on **{status.describe()}**. "
+        f"Run `/premium` to see what each plan includes."
+    )
+
+
+async def ensure_feature(interaction, feature: str) -> bool:
+    """Reply with an upgrade message and return False if the server lacks ``feature``.
+
+    Works whether or not the interaction was already deferred. Without a
+    tier service (tests, or tiers not set up) everything is allowed.
+    """
+    tiers = getattr(interaction.client, "tiers", None)
+    if tiers is None or interaction.guild_id is None:
+        return True
+    allowed, status = await tiers.check_feature(str(interaction.guild_id), feature)
+    if allowed:
+        return True
+    text = upgrade_message(feature, status)
+    if interaction.response.is_done():
+        await interaction.followup.send(text, ephemeral=True)
+    else:
+        await interaction.response.send_message(text, ephemeral=True)
+    return False
+
+
+def requires_feature(feature: str):
+    """Slash-command check: run the command only if the server has ``feature``.
+
+    The upgrade message is sent by the check, so a refusal raises
+    FeatureLocked, which error handlers should ignore.
+    """
+
+    async def predicate(interaction) -> bool:
+        if await ensure_feature(interaction, feature):
+            return True
+        raise FeatureLocked(feature)
+
+    return app_commands.check(predicate)
+
+
+class FeatureLocked(app_commands.CheckFailure):
+    """Raised after the upgrade message has been sent."""
+
+    def __init__(self, feature: str) -> None:
+        super().__init__(f"feature {feature} needs a higher plan")
+        self.feature = feature

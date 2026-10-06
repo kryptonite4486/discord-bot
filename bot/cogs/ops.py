@@ -1,4 +1,5 @@
-"""Operator-only commands: reload, sync, backup, queue, purges, usage.
+"""Operator-only commands: reload, sync, backup, queue, purges, usage, and
+gifting plans (grant, revoke, extend, show, list).
 
 These act on the whole bot, not one server, so they are limited to the
 users in BOT_OWNER_IDS. The /ops slash group is registered only in
@@ -21,6 +22,7 @@ from bot.utils.backup import create_backup
 from bot.utils.command_sync import sync_commands, sync_control_guild
 from bot.utils.fair_queue import GuildQueueState
 from bot.utils.retention import RemovedServer, removed_servers
+from bot.utils.tiers import TIERS, status_from_entitlements
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +68,9 @@ _RELOAD_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "bot.utils.backup",
         "bot.utils.command_sync",
         "bot.utils.retention",
+    ),
+    "bot.cogs.premium": (
+        "bot.utils.tiers",
     ),
 }
 
@@ -240,6 +245,98 @@ def format_purges_report(servers: list[RemovedServer], retention_days: int) -> s
     return "\n".join(lines)
 
 
+GIFT_TIER_CHOICES = [
+    app_commands.Choice(name="Alliance", value="mid"),
+    app_commands.Choice(name="Command", value="full"),
+]
+DURATION_CHOICES = [
+    app_commands.Choice(name="30 days", value="30"),
+    app_commands.Choice(name="90 days", value="90"),
+    app_commands.Choice(name="1 year", value="365"),
+    app_commands.Choice(name="Permanent", value="permanent"),
+]
+# Sources an operator may revoke. Paid subscriptions end through billing.
+REVOCABLE_SOURCES = {"gift", "trial", "code"}
+_TS = "%Y-%m-%d %H:%M:%S"
+
+
+def gift_end(duration: str, start: datetime) -> str | None:
+    """EndsAt for a duration choice; None for permanent."""
+    if duration == "permanent":
+        return None
+    return (start + timedelta(days=int(duration))).strftime(_TS)
+
+
+def extended_end(current: str, duration: str, now: datetime) -> str | None:
+    """Push an end date out by ``duration``, from now if it already passed."""
+    if duration == "permanent":
+        return None
+    base = max(datetime.strptime(current, _TS).replace(tzinfo=timezone.utc), now)
+    return (base + timedelta(days=int(duration))).strftime(_TS)
+
+
+def _entitlement_line(row: dict, now: str) -> str:
+    tier = TIERS[row["Tier"]].name if row["Tier"] in TIERS else row["Tier"]
+    if row["RevokedAt"]:
+        state = f"revoked {row['RevokedAt'][:10]}"
+    elif row["StartsAt"] > now:
+        state = f"starts {row['StartsAt'][:10]}"
+    elif row["EndsAt"] and row["EndsAt"] <= now:
+        state = f"ended {row['EndsAt'][:10]}"
+    else:
+        state = f"active, until {row['EndsAt'][:10]}" if row["EndsAt"] else "active, no end"
+    reason = f" — {row['Reason']}" if row.get("Reason") else ""
+    return f"#{row['Id']} {tier} ({row['Source']}): {state}{reason}"
+
+
+def format_show(
+    guild_id: str,
+    name: str | None,
+    rows: list[dict],
+    audit: list[dict],
+    used: int,
+    now: str,
+) -> str:
+    active = [r for r in rows if not r["RevokedAt"] and r["StartsAt"] <= now
+              and (r["EndsAt"] is None or r["EndsAt"] > now)]
+    status = status_from_entitlements(active)
+    lines = [
+        f"**{name or 'Unknown server (bot not in it)'}** `{guild_id}`",
+        f"Plan: **{status.describe()}** · screenshots this week: "
+        f"{used}/{status.policy.ocr_images_per_week}",
+    ]
+    lines.append("**Entitlements**" if rows else "No entitlements.")
+    lines += [f"• {_entitlement_line(r, now)}" for r in rows[:15]]
+    if audit:
+        lines.append("**Recent changes**")
+        lines += [
+            f"• {a['At'][:16]} {a['Action']} by `{a['ActorId'] or '?'}`: {a['Detail'] or ''}"
+            for a in audit[:5]
+        ]
+    return "\n".join(lines)[:1900]
+
+
+def format_entitlement_list(rows: list[dict], names: dict[str, str], within_days: int | None) -> str:
+    title = (
+        f"**Active entitlements ending within {within_days} day(s)**"
+        if within_days is not None
+        else "**Active entitlements**"
+    )
+    if not rows:
+        return title + "\nNone."
+    lines = [title]
+    for r in rows[:MAX_USAGE_ROWS]:
+        tier = TIERS[r["Tier"]].name if r["Tier"] in TIERS else r["Tier"]
+        until = r["EndsAt"][:10] if r["EndsAt"] else "no end"
+        lines.append(
+            f"• #{r['Id']} {names.get(r['GuildId'], r['GuildId'])}: {tier} "
+            f"({r['Source']}) until {until}"
+        )
+    if len(rows) > MAX_USAGE_ROWS:
+        lines.append(f"…and {len(rows) - MAX_USAGE_ROWS} more")
+    return "\n".join(lines)
+
+
 def is_operator(bot: commands.Bot, user_id: int) -> bool:
     return user_id in bot.settings.bot_owner_ids
 
@@ -359,6 +456,178 @@ class Ops(commands.Cog):
         await interaction.response.send_message(
             format_queue_report(ocr_queue.snapshot(), ocr_queue.slots, names),
             ephemeral=True,
+        )
+
+    # --- Gifting (entitlements) ---------------------------------------------
+
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _guild_name(self, guild_id: str) -> str | None:
+        guild = self.bot.get_guild(int(guild_id)) if guild_id.isdigit() else None
+        return guild.name if guild else None
+
+    async def _guild_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        needle = current.casefold()
+        return [
+            app_commands.Choice(name=f"{g.name} ({g.id})"[:100], value=str(g.id))
+            for g in self.bot.guilds
+            if needle in g.name.casefold() or needle in str(g.id)
+        ][:25]
+
+    @ops.command(name="grant", description="Gift a plan to a server")
+    @app_commands.describe(
+        guild_id="Server to gift (pick from the list, or paste an ID)",
+        tier="Plan to gift",
+        duration="How long the gift lasts",
+        reason="Why (kept in the audit log)",
+    )
+    @app_commands.choices(tier=GIFT_TIER_CHOICES, duration=DURATION_CHOICES)
+    @app_commands.autocomplete(guild_id=_guild_autocomplete)
+    async def grant(
+        self,
+        interaction: discord.Interaction,
+        guild_id: str,
+        tier: app_commands.Choice[str],
+        duration: app_commands.Choice[str],
+        reason: str,
+    ) -> None:
+        guild_id = guild_id.strip()
+        if not guild_id.isdigit():
+            await interaction.response.send_message("That isn't a server ID.", ephemeral=True)
+            return
+        now = self._now()
+        ends = gift_end(duration.value, now)
+        new_id = await self.bot.db.add_entitlement(
+            guild_id, tier.value, "gift",
+            starts_at=now.strftime(_TS), ends_at=ends,
+            granted_by=str(interaction.user.id), reason=reason,
+        )
+        self.bot.tiers.invalidate(guild_id)
+        name = self._guild_name(guild_id)
+        warn = "" if name else "\n⚠️ The bot isn't in that server; the gift applies if it's added."
+        log.warning("Gift #%d: %s until %s for guild %s by %s (%s)",
+                    new_id, tier.name, ends or "no end", guild_id, interaction.user, reason)
+        await interaction.response.send_message(
+            f"Gifted **{tier.name}** to **{name or guild_id}** "
+            f"{'permanently' if ends is None else 'until ' + ends[:10]} (#{new_id}).{warn}",
+            ephemeral=True,
+        )
+
+    @ops.command(name="revoke", description="Revoke a server's gifts, or one entitlement")
+    @app_commands.describe(
+        guild_id="Server whose gifts to revoke",
+        entitlement_id="Only this entitlement (see /ops show); default: all active gifts",
+        reason="Why (kept in the audit log)",
+    )
+    @app_commands.autocomplete(guild_id=_guild_autocomplete)
+    async def revoke(
+        self,
+        interaction: discord.Interaction,
+        guild_id: str,
+        reason: str,
+        entitlement_id: int | None = None,
+    ) -> None:
+        guild_id = guild_id.strip()
+        now = self._now().strftime(_TS)
+        if entitlement_id is not None:
+            row = await self.bot.db.get_entitlement(entitlement_id)
+            if row is None or row["GuildId"] != guild_id:
+                await interaction.response.send_message(
+                    f"No entitlement #{entitlement_id} for that server.", ephemeral=True
+                )
+                return
+            targets = [row]
+        else:
+            targets = [
+                r for r in await self.bot.db.active_entitlements(guild_id, now)
+                if r["Source"] in REVOCABLE_SOURCES
+            ]
+        paid = [r for r in targets if r["Source"] not in REVOCABLE_SOURCES]
+        if paid:
+            await interaction.response.send_message(
+                f"#{paid[0]['Id']} is a paid subscription; it ends through billing, "
+                "not /ops revoke.", ephemeral=True,
+            )
+            return
+        done = [
+            r["Id"] for r in targets
+            if await self.bot.db.revoke_entitlement(
+                r["Id"], at=now, actor_id=str(interaction.user.id), reason=reason
+            )
+        ]
+        self.bot.tiers.invalidate(guild_id)
+        if done:
+            log.warning("Revoked %s for guild %s by %s (%s)", done, guild_id, interaction.user, reason)
+        status = await self.bot.tiers.status(guild_id)
+        await interaction.response.send_message(
+            (f"Revoked {', '.join(f'#{i}' for i in done)}." if done else "Nothing active to revoke.")
+            + f" The server is now on **{status.describe()}**.",
+            ephemeral=True,
+        )
+
+    @ops.command(name="extend", description="Extend an entitlement, or make it permanent")
+    @app_commands.describe(entitlement_id="Entitlement to extend (see /ops show)", duration="How much longer")
+    @app_commands.choices(duration=DURATION_CHOICES)
+    async def extend(
+        self,
+        interaction: discord.Interaction,
+        entitlement_id: int,
+        duration: app_commands.Choice[str],
+    ) -> None:
+        row = await self.bot.db.get_entitlement(entitlement_id)
+        if row is None:
+            await interaction.response.send_message(f"No entitlement #{entitlement_id}.", ephemeral=True)
+            return
+        if row["Source"] not in REVOCABLE_SOURCES:
+            await interaction.response.send_message(
+                f"#{entitlement_id} is a paid subscription; its dates come from billing.",
+                ephemeral=True,
+            )
+            return
+        if row["EndsAt"] is None:
+            await interaction.response.send_message(
+                f"#{entitlement_id} is already permanent.", ephemeral=True
+            )
+            return
+        ends = extended_end(row["EndsAt"], duration.value, self._now())
+        await self.bot.db.set_entitlement_end(entitlement_id, ends, actor_id=str(interaction.user.id))
+        self.bot.tiers.invalidate(row["GuildId"])
+        await interaction.response.send_message(
+            f"#{entitlement_id} now {'has no end date' if ends is None else 'ends ' + ends[:10]}.",
+            ephemeral=True,
+        )
+
+    @ops.command(name="show", description="A server's plan, entitlements and recent changes")
+    @app_commands.autocomplete(guild_id=_guild_autocomplete)
+    async def show(self, interaction: discord.Interaction, guild_id: str) -> None:
+        guild_id = guild_id.strip()
+        rows = await self.bot.db.entitlements_for(guild_id)
+        audit = await self.bot.db.entitlement_audit(guild_id)
+        used = await self.bot.tiers.ocr_used_this_week(guild_id)
+        await interaction.response.send_message(
+            format_show(guild_id, self._guild_name(guild_id), rows, audit, used,
+                        self._now().strftime(_TS)),
+            ephemeral=True,
+        )
+
+    @ops.command(name="list", description="Active entitlements across servers")
+    @app_commands.describe(expiring_within="Only those ending within this many days")
+    async def list_entitlements(
+        self,
+        interaction: discord.Interaction,
+        expiring_within: app_commands.Range[int, 1, 365] | None = None,
+    ) -> None:
+        now = self._now()
+        rows = await self.bot.db.all_active_entitlements(now.strftime(_TS))
+        if expiring_within is not None:
+            cutoff = (now + timedelta(days=expiring_within)).strftime(_TS)
+            rows = [r for r in rows if r["EndsAt"] and r["EndsAt"] <= cutoff]
+        names = {str(g.id): g.name for g in self.bot.guilds}
+        await interaction.response.send_message(
+            format_entitlement_list(rows, names, expiring_within), ephemeral=True
         )
 
     @ops.command(name="purges", description="Servers that removed the bot and when their data will be deleted")

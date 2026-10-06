@@ -83,8 +83,11 @@ class Settings:
     backup_keep: int
     backup_max_age_days: int
     data_retention_days: int
+    tiers_enforced: bool
     allow_unmounted_data: bool
     planner_url: str = DEFAULT_PLANNER_URL
+    # None: the question bank bundled with the bot.
+    trivia_questions_path: Path | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -128,9 +131,16 @@ class Settings:
             backup_max_age_days=max(1, _optional_int("BACKUP_MAX_AGE_DAYS") or 30),
             # Days a removed server's data is kept in case the bot is re-added.
             data_retention_days=max(1, _optional_int("DATA_RETENTION_DAYS") or 30),
+            # Off: tier limits are only logged, nothing is blocked.
+            tiers_enforced=_env_bool("TIERS_ENFORCED", False),
             allow_unmounted_data=_env_bool("ALLOW_UNMOUNTED_DATA", False),
             planner_url=(
                 os.getenv("PLANNER_URL", "").strip().rstrip("/") or DEFAULT_PLANNER_URL
+            ),
+            trivia_questions_path=(
+                Path(os.environ["TRIVIA_QUESTIONS_PATH"])
+                if os.getenv("TRIVIA_QUESTIONS_PATH", "").strip()
+                else None
             ),
         )
 

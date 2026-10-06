@@ -55,8 +55,18 @@ Planner
   /planner          Link the territory planner web app
   /planner plan:    Share a plan (paste a link from its Share link button)
 
+Trivia (multiple choice; answer with the buttons)
+  /trivia start     Start a match in this channel
+                    mode:Cross-server opens it to other servers for 45s
+  /trivia join      Join the open cross-server match from this channel
+  /trivia stop      Stop the match here (a cross-server match goes on elsewhere)
+  /trivia leaderboard  All-time scores (scope:Cross-server for every server)
+  /trivia settings  Cross-server play on/off, invitation channel (Manage Server)
+  /trivia reset     Delete this server's trivia scores (Administrator)
+
 Help
   /help             Show this command list
+  /premium          This server's plan, weekly screenshot use, and what each plan includes
 ```
 
 Week args accept `YYYY-MM-DD`, `current`, or `last` (normalized to Sunday).

@@ -4,12 +4,13 @@ Discord bot for Last Z alliances: a modular **discord.py** bot that ingests week
 
 ## Features
 
-- Slash commands only, via cogs (`admin`, `data`, `ingest`, `ops`, `reports`)
+- Slash commands only, via cogs (`admin`, `data`, `ingest`, `ops`, `reports`, `trivia`)
 - No privileged intents: the bot can't read ordinary messages; `/ingest batch` collects messages that @mention it
 - SQLite fact table `WeeklyMetrics` at `/app/data/weekly.db`, **partitioned per Discord server** (`GuildId`)
 - Manual `/add`, pasted CSV/text `/ingest text`, OCR `/ingest image` / `/ingest zip` / `/ingest batch`
 - Reports: weekly summary, player trends, growth, leaderboards, PNG charts
 - **Server-only**: DMs are rejected; every command runs in a guild context
+- Trivia matches in one channel, or across every server that joins (`/trivia`)
 
 ## Quick start (Docker)
 
@@ -110,6 +111,11 @@ These act on the whole bot, so only users in `BOT_OWNER_IDS` can run them, and t
 | `/ops backup` | Write a database backup now |
 | `/ops queue` | Live OCR queue: requests running and waiting per server, and how long the oldest has waited |
 | `/ops purges` | Servers that removed the bot and when their data will be deleted |
+| `/ops grant <server> <tier> <duration> <reason>` | Gift Alliance or Command to a server for 30 days, 90 days, 1 year or permanently |
+| `/ops revoke <server> <reason> [entitlement]` | Revoke a server's active gifts (or one entitlement); paid subscriptions can't be revoked here |
+| `/ops extend <entitlement> <duration>` | Extend a gift, or make it permanent |
+| `/ops show <server>` | A server's plan, all its entitlements, this week's screenshots and recent changes |
+| `/ops list [expiring_within]` | Active entitlements across servers, soonest-ending first |
 | `/ops usage [days]` | OCR usage per server for the last N days (default 7): batches, images, failures, OCR minutes, seconds per image, average queue wait, and the busiest day |
 
 ### Ingestion
@@ -142,6 +148,23 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 | `/report growth <metric> [weeks]` | Growth rates |
 | `/report leaderboard <metric>` | Ranked list + chart |
 
+### Plans
+
+| Command | Description |
+|---------|-------------|
+| `/premium` | This server's plan, screenshots used this week, and what each plan includes |
+
+Each server is on **Free**, **Alliance** or **Command**: the highest plan among its active entitlements (paid, gifted or trial, in `GuildEntitlement`). Plans differ in screenshots per week (25 / 250 / 1,000, Sunday to Sunday UTC) and in these features:
+
+| Feature | Plan needed |
+|---|---|
+| `/ingest zip`, `/ingest batch` | Alliance |
+| `/report player`, `/report trend`, `/report growth` | Alliance |
+| `/admin duplicates`, `/admin rename-player` | Alliance |
+| Reports over more than one channel | Command |
+
+Everything else is free. **Limits are only enforced when `TIERS_ENFORCED=true`.** Until then nothing is blocked; the log records what would have been (`Tier check (not enforced)`, `OCR quota (not enforced)`), so you can gift plans with `/ops grant` and check the log before switching enforcement on. Every grant, revoke and extend is recorded in `EntitlementAudit`.
+
 ### Planner
 | Command | Description |
 |---------|-------------|
@@ -149,6 +172,27 @@ Week accepts `YYYY-MM-DD`, `current`, or `last` (normalized to that week's Sunda
 | `/planner plan:<link>` | Repost a plan from the planner's **Share link** button so the channel can open it |
 
 The planner is a separate static site (repo `territory-planner`, hosted on Cloudflare Pages); the bot only links to it. Plans live in the link itself, so the bot stores nothing. `plan` only accepts links on the planner's own address. Override the address with `PLANNER_URL`.
+
+### Trivia
+| Command | Description |
+|---------|-------------|
+| `/trivia start [mode] [questions] [seconds] [category] [difficulty]` | Start a match in this channel: 3–20 questions (default 10), 10–60 s each (default 20) |
+| `/trivia join` | Join the open cross-server match from this channel |
+| `/trivia stop` | Stop the match here. In a cross-server match only this channel leaves; the rest play on |
+| `/trivia leaderboard [scope]` | All-time totals for this server, or `scope:Cross-server` |
+| `/trivia settings [cross_server] [announce_channel] [stop_announcing]` | Server options (Manage Server); no options shows the current ones |
+| `/trivia reset` | Delete this server's trivia scores, with confirmation (Administrator) |
+
+**Two ways to play, chosen by `mode`:**
+
+- **This server** (default): the match runs in the channel where it was started, 5 seconds after the command.
+- **Cross-server**: opens a lobby for 45 seconds. Other servers join from any channel with `/trivia join` (or `/trivia start mode:Cross-server`, which joins the open lobby instead of opening another), and servers that set an `announce_channel` get an invitation with a **Join** button there. Every joined channel then gets the same questions at the same moment, answers from all of them go into one scoreboard, and the results also total points per server. Only one lobby is open at a time, a match holds up to 20 channels, and each server can open a lobby once every 5 minutes so invitations can't be spammed.
+
+Everyone in a joined channel can answer. Answers are buttons (A–D), so the bot still needs no Message Content intent; the first press counts and can't be changed, and the reply is visible only to the person who pressed. A correct answer scores 100 points plus up to 50 for speed, shrinking over the answer window. Whoever started or joined the match in a channel, or anyone with Manage Messages there, can stop it. Matches live in memory: a restart ends them with a notice, and nothing is recorded for them.
+
+Cross-server play shows players' Discord display names and server names to the other servers in the match and on the cross-server leaderboard. A server that turns it off with `/trivia settings cross_server:False` can't open or join cross-server matches and is left off that leaderboard.
+
+**Questions** come from `bot/trivia/questions.json`, bundled with the bot (about 90 questions across 8 categories; no third-party service). Each server avoids repeating its last 300 questions while fresh ones remain. To use your own bank, set `TRIVIA_QUESTIONS_PATH` to a JSON file in the same format (one to three wrong answers per question, so true/false works). The file is checked at startup; if it's missing or any entry is invalid, the error is logged and the bundled questions are used instead.
 
 ## Dataset is always named
 
@@ -195,6 +239,8 @@ When the bot is removed from a server (kicked, banned, or the server deleted), t
 `PendingPurge (GuildId, RemovedAt)` records removals; the deletion date is worked out from it and the server's subscriptions at each hourly check, so renewals and cancellations apply without rescheduling. A backup is taken before each scheduled deletion, and if the backup fails the deletion waits for the next hour. Servers that removed the bot while it was offline are found at startup and treated as removed from then. `/ops purges` lists removed servers and their deletion dates ("kept: subscribed" while a subscription is active).
 
 Server admins can delete data immediately with `/data delete` (one channel, or the whole server).
+
+Trivia keeps totals per player per server in `TriviaScore (GuildId, UserId, Mode, DisplayName, GuildName, Points, Correct, Answered, Games, Wins)`, with `Mode` `server` or `global` (a cross-server player's points count for the server they played from), and per-server options in `TriviaSettings (GuildId, AllowGlobal, AnnounceChannelId)`. Both follow the same removal retention as metrics. `/trivia reset` deletes a server's trivia scores; `/data delete` doesn't touch them.
 
 Deleted data still exists in backups until they age out, at most `BACKUP_MAX_AGE_DAYS` (default 30) days after the deletion, while the bot is running. So with the defaults, a removed server's data is fully gone within about 60 days of the bot's removal (30 days' retention plus 30 days of backups), or 30 days after `/data delete`. Usage counters (`UsageLedger`) are not deleted; they hold only per-day counts, no player data.
 
@@ -262,10 +308,11 @@ The suite includes `tests/test_vision_samples.py`, which runs every screenshot i
 bot/
   main.py           # entrypoint
   config.py         # env settings
-  cogs/             # admin, help, ingest, ops, planner, reports
+  cogs/             # admin, help, ingest, ops, planner, reports, trivia
   db/               # SQLite helpers
   ocr/              # Vision-model OCR (oMLX) and response parsing
   reporting/        # markdown + matplotlib
+  trivia/           # question bank (questions.json) and match scoring
   utils/            # logging, parsing
 data/               # placeholder only; the database lives in BOT_DATA_DIR
 Dockerfile

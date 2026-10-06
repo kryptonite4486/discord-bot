@@ -31,6 +31,7 @@ from bot.utils.guild import (
 )
 from bot.utils.fair_queue import FairQueue
 from bot.utils.names import reconcile_names
+from bot.utils.tiers import requires_feature
 from bot.utils.plausibility import check_batch
 from bot.utils.parsing import (
     format_value,
@@ -90,6 +91,15 @@ def batch_word(content: str | None, user_id: int) -> str:
     """Message text with the bot's mention removed, lowercased."""
     text = (content or "").replace(f"<@{user_id}>", "").replace(f"<@!{user_id}>", "")
     return text.strip().lower()
+
+
+def quota_exhausted_message(used: int, limit: int) -> str:
+    return (
+        f"⚠️ This server has used its **{limit}** screenshots for this week "
+        f"({used} so far), so nothing was processed. The limit resets on Sunday "
+        f"(UTC). Run `/premium` to see plans with more, or use `/add` or "
+        f"`/ingest text` meanwhile."
+    )
 
 
 def _summary_head(summary: str) -> str:
@@ -533,6 +543,7 @@ class Ingest(commands.Cog):
         week="Week start YYYY-MM-DD / current / last",
     )
     @app_commands.choices(dataset=DATASET_CHOICES)
+    @requires_feature("zip_batch")
     async def ingest_zip(
         self,
         interaction: discord.Interaction,
@@ -617,6 +628,7 @@ class Ingest(commands.Cog):
         timeout_minutes="How long to wait for uploads (1–15)",
     )
     @app_commands.choices(dataset=DATASET_CHOICES)
+    @requires_feature("zip_batch")
     async def ingest_batch(
         self,
         interaction: discord.Interaction,
@@ -892,6 +904,45 @@ class Ingest(commands.Cog):
             images = images[:MAX_BATCH_IMAGES]
             truncated = f"\n_(Capped at {MAX_BATCH_IMAGES} images.)_"
 
+        # Weekly OCR quota for the server's plan. Images over the quota are
+        # skipped (only when tiers are enforced) and the summary says why.
+        tiers = getattr(self.bot, "tiers", None)
+        reserved = len(images)
+        if tiers is not None:
+            reserved, used, limit = await tiers.reserve_ocr(guild_id, len(images))
+            if reserved == 0:
+                return quota_exhausted_message(used, limit)
+            if reserved < len(images):
+                skipped = [img.filename for img in images[reserved:]]
+                images = images[:reserved]
+                truncated += (
+                    f"\n⚠️ Weekly screenshot limit: {len(skipped)} image(s) not "
+                    f"processed ({limit} per week on this plan; resets Sunday UTC). "
+                    f"Skipped: {', '.join(f'`{PurePosixPath(n).name}`' for n in skipped[:10])}"
+                    + (" …" if len(skipped) > 10 else "")
+                    + ". Run `/premium` for plans with more."
+                )
+        try:
+            return await self._run_ocr_batch(
+                images, kind, week_start, guild_id, channel_id,
+                progress=progress, notes=notes, truncated=truncated,
+            )
+        finally:
+            if tiers is not None:
+                tiers.release_ocr(guild_id, reserved)
+
+    async def _run_ocr_batch(
+        self,
+        images: list[ImageSource],
+        kind: str,
+        week_start: str,
+        guild_id: str,
+        channel_id: str,
+        *,
+        progress: ProgressCallback | None,
+        notes: Sequence[str],
+        truncated: str,
+    ) -> str:
         engine_label = self._ocr.label
 
         log.info(

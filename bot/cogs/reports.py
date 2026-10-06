@@ -19,6 +19,7 @@ from bot.utils.guild import (
     guild_id_from_interaction,
 )
 from bot.utils.parsing import chunk_fenced_md, parse_week_start
+from bot.utils.tiers import ensure_feature, requires_feature
 
 log = logging.getLogger(__name__)
 
@@ -249,6 +250,30 @@ class Reports(commands.Cog):
         channel2: discord.abc.GuildChannel | None = None,
         channel3: discord.abc.GuildChannel | None = None,
     ) -> ReportScope | None:
+        """Resolve the report's channels; None if cancelled or not allowed.
+
+        Reports over more than one channel need the multi_channel_reports
+        feature (Command plan).
+        """
+        rs = await self._resolve_scope_or_prompt_any(
+            interaction, scope, channel=channel, channel2=channel2, channel3=channel3
+        )
+        if rs is None:
+            return None
+        if rs.channel_ids is None or len(rs.channel_ids) > 1:
+            if not await ensure_feature(interaction, "multi_channel_reports"):
+                return None
+        return rs
+
+    async def _resolve_scope_or_prompt_any(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str] | None,
+        *,
+        channel: discord.abc.GuildChannel | None = None,
+        channel2: discord.abc.GuildChannel | None = None,
+        channel3: discord.abc.GuildChannel | None = None,
+    ) -> ReportScope | None:
         """
         Resolve scope. Select Channels shows an ephemeral multi-select of
         channels that already have data (unless channel shortcuts were passed).
@@ -381,6 +406,7 @@ class Reports(commands.Cog):
         channel3="Additional data channel to include",
     )
     @app_commands.choices(scope=SCOPE_CHOICES)
+    @requires_feature("advanced_reports")
     async def report_player(
         self,
         interaction: discord.Interaction,
@@ -484,6 +510,7 @@ class Reports(commands.Cog):
         channel3="Additional data channel to include",
     )
     @app_commands.choices(metric=METRIC_CHOICES, scope=SCOPE_CHOICES)
+    @requires_feature("advanced_reports")
     async def report_trend(
         self,
         interaction: discord.Interaction,
@@ -529,6 +556,7 @@ class Reports(commands.Cog):
         channel3="Additional data channel to include",
     )
     @app_commands.choices(metric=METRIC_CHOICES, scope=SCOPE_CHOICES)
+    @requires_feature("advanced_reports")
     async def report_growth(
         self,
         interaction: discord.Interaction,

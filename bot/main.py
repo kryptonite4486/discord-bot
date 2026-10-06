@@ -15,6 +15,7 @@ from bot.db import Database
 from bot.utils import setup_logging
 from bot.utils.command_sync import sync_commands
 from bot.utils.guild import reject_dm_interaction
+from bot.utils.tiers import FeatureLocked, Tiers
 from bot.utils.storage import check_persistent_paths
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,9 @@ COGS = (
     "bot.cogs.ingest",
     "bot.cogs.ops",
     "bot.cogs.planner",
+    "bot.cogs.premium",
     "bot.cogs.reports",
+    "bot.cogs.trivia",
 )
 
 
@@ -75,6 +78,11 @@ class LastZAssistant(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.connect()
+        self.tiers = Tiers(self.db, enforced=self.settings.tiers_enforced)
+        log.info(
+            "Subscription tiers: %s",
+            "enforced" if self.settings.tiers_enforced else "not enforced (logging only)",
+        )
         unassigned = await self.db.count_all_unassigned()
         if unassigned:
             log.warning(
@@ -132,6 +140,8 @@ class LastZAssistant(commands.Bot):
             command._has_any_error_handlers()
         ):
             return
+        if isinstance(error, FeatureLocked):
+            return  # the upgrade message was already sent
         log.exception("App command error in %s: %s", interaction.command, error)
         text = f"Command failed: `{error}`"
         try:

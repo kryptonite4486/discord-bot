@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS GuildEntitlement (
 CREATE INDEX IF NOT EXISTS idx_ent_guild
     ON GuildEntitlement (GuildId, RevokedAt, EndsAt);
 
+-- Who granted, revoked or extended which entitlement, and why.
+CREATE TABLE IF NOT EXISTS EntitlementAudit (
+    Id      INTEGER PRIMARY KEY,
+    At      TEXT NOT NULL DEFAULT (datetime('now')),
+    ActorId TEXT,
+    Action  TEXT NOT NULL,  -- grant | revoke | extend
+    GuildId TEXT NOT NULL,
+    Detail  TEXT
+);
+
 -- Per-server usage, one row per UTC day and measure (see USAGE_KINDS).
 CREATE TABLE IF NOT EXISTS UsageLedger (
     GuildId TEXT NOT NULL,
@@ -81,6 +91,34 @@ CREATE TABLE IF NOT EXISTS UsageLedger (
     Kind    TEXT NOT NULL,
     Amount  REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (GuildId, Day, Kind)
+);
+
+-- Trivia totals per player per server, split by match mode ('server' |
+-- 'global'). A player's cross-server points count for the server they
+-- played from. GuildName is kept for the cross-server leaderboard.
+CREATE TABLE IF NOT EXISTS TriviaScore (
+    GuildId     TEXT    NOT NULL,
+    UserId      TEXT    NOT NULL,
+    Mode        TEXT    NOT NULL,
+    DisplayName TEXT    NOT NULL,
+    GuildName   TEXT    NOT NULL DEFAULT '',
+    Points      INTEGER NOT NULL DEFAULT 0,
+    Correct     INTEGER NOT NULL DEFAULT 0,
+    Answered    INTEGER NOT NULL DEFAULT 0,
+    Games       INTEGER NOT NULL DEFAULT 0,
+    Wins        INTEGER NOT NULL DEFAULT 0,
+    UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (GuildId, UserId, Mode)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trivia_mode ON TriviaScore (Mode, Points);
+
+-- Per-server trivia options. No row = defaults (cross-server play allowed,
+-- no announcement channel).
+CREATE TABLE IF NOT EXISTS TriviaSettings (
+    GuildId           TEXT PRIMARY KEY,
+    AllowGlobal       INTEGER NOT NULL DEFAULT 1,
+    AnnounceChannelId TEXT
 );
 """
 
@@ -1021,7 +1059,7 @@ class Database:
 
     async def guilds_with_data(self) -> set[str]:
         async with self.conn.execute(
-            "SELECT DISTINCT GuildId FROM WeeklyMetrics"
+            "SELECT GuildId FROM WeeklyMetrics UNION SELECT GuildId FROM TriviaScore"
         ) as cursor:
             return {str(r["GuildId"]) for r in await cursor.fetchall()}
 
@@ -1082,13 +1120,278 @@ class Database:
         return bool(row["active"]), row["ended"]
 
     async def purge_guild(self, guild_id: str) -> int:
-        """Delete a server's metrics and clear its schedule; return rows removed."""
+        """Delete a server's metrics and trivia data and clear its schedule.
+
+        Returns metric rows removed.
+        """
         async with self._write_lock:
             cursor = await self.conn.execute(
                 "DELETE FROM WeeklyMetrics WHERE GuildId = ?", (guild_id,)
             )
+            for table in ("TriviaScore", "TriviaSettings"):
+                await self.conn.execute(
+                    f"DELETE FROM {table} WHERE GuildId = ?", (guild_id,)
+                )
             await self.conn.execute(
                 "DELETE FROM PendingPurge WHERE GuildId = ?", (guild_id,)
+            )
+            await self.conn.commit()
+        return cursor.rowcount
+
+    async def usage_total(self, guild_id: str, since_day: str, kind: str) -> float:
+        """One server's total for one usage measure from ``since_day`` (inclusive)."""
+        async with self.conn.execute(
+            "SELECT COALESCE(SUM(Amount), 0) AS total FROM UsageLedger "
+            "WHERE GuildId = ? AND Day >= ? AND Kind = ?",
+            (guild_id, since_day, kind),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return float(row["total"])
+
+    # --- Entitlements (subscriptions, gifts, trials) ------------------------
+
+    _ACTIVE_SQL = (
+        "RevokedAt IS NULL AND StartsAt <= :now AND (EndsAt IS NULL OR EndsAt > :now)"
+    )
+
+    async def active_entitlements(self, guild_id: str, now: str) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            f"SELECT * FROM GuildEntitlement WHERE GuildId = :guild AND {self._ACTIVE_SQL} "
+            "ORDER BY Id",
+            {"guild": guild_id, "now": now},
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def entitlements_for(self, guild_id: str) -> list[dict[str, Any]]:
+        """Every entitlement a server has had, newest first."""
+        async with self.conn.execute(
+            "SELECT * FROM GuildEntitlement WHERE GuildId = ? ORDER BY Id DESC",
+            (guild_id,),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def all_active_entitlements(self, now: str) -> list[dict[str, Any]]:
+        """Active entitlements across all servers, soonest-ending first."""
+        async with self.conn.execute(
+            f"SELECT * FROM GuildEntitlement WHERE {self._ACTIVE_SQL} "
+            "ORDER BY EndsAt IS NULL, EndsAt, GuildId",
+            {"now": now},
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_entitlement(self, entitlement_id: int) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            "SELECT * FROM GuildEntitlement WHERE Id = ?", (entitlement_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def add_entitlement(
+        self,
+        guild_id: str,
+        tier: str,
+        source: str,
+        *,
+        starts_at: str,
+        ends_at: str | None,
+        granted_by: str | None,
+        reason: str | None,
+        external_id: str | None = None,
+    ) -> int:
+        """Insert an entitlement and its audit entry; return its Id."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO GuildEntitlement
+                    (GuildId, Tier, Source, ExternalId, StartsAt, EndsAt, GrantedBy, Reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (guild_id, tier, source, external_id, starts_at, ends_at, granted_by, reason),
+            )
+            new_id = int(cursor.lastrowid)
+            await self._audit(
+                granted_by, "grant", guild_id,
+                f"#{new_id} {tier} {source} until {ends_at or 'no end'}: {reason or ''}".strip(),
+            )
+            await self.conn.commit()
+        return new_id
+
+    async def revoke_entitlement(
+        self, entitlement_id: int, *, at: str, actor_id: str | None, reason: str | None
+    ) -> bool:
+        """Mark an entitlement revoked (never deleted); False if already revoked."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                "UPDATE GuildEntitlement SET RevokedAt = ? WHERE Id = ? AND RevokedAt IS NULL",
+                (at, entitlement_id),
+            )
+            if cursor.rowcount == 0:
+                return False
+            guild_id = await self._entitlement_guild(entitlement_id)
+            await self._audit(actor_id, "revoke", guild_id, f"#{entitlement_id}: {reason or ''}".strip())
+            await self.conn.commit()
+        return True
+
+    async def set_entitlement_end(
+        self, entitlement_id: int, ends_at: str | None, *, actor_id: str | None
+    ) -> bool:
+        """Change when an entitlement ends (None: no end); False if not found."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                "UPDATE GuildEntitlement SET EndsAt = ? WHERE Id = ?",
+                (ends_at, entitlement_id),
+            )
+            if cursor.rowcount == 0:
+                return False
+            guild_id = await self._entitlement_guild(entitlement_id)
+            await self._audit(
+                actor_id, "extend", guild_id, f"#{entitlement_id} until {ends_at or 'no end'}"
+            )
+            await self.conn.commit()
+        return True
+
+    async def entitlement_audit(self, guild_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            "SELECT * FROM EntitlementAudit WHERE GuildId = ? ORDER BY Id DESC LIMIT ?",
+            (guild_id, limit),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def _entitlement_guild(self, entitlement_id: int) -> str:
+        async with self.conn.execute(
+            "SELECT GuildId FROM GuildEntitlement WHERE Id = ?", (entitlement_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["GuildId"]) if row else ""
+
+    async def _audit(self, actor_id: str | None, action: str, guild_id: str, detail: str) -> None:
+        # Caller holds the write lock and commits.
+        await self.conn.execute(
+            "INSERT INTO EntitlementAudit (ActorId, Action, GuildId, Detail) VALUES (?, ?, ?, ?)",
+            (actor_id, action, guild_id, detail),
+        )
+
+    # --- Trivia --------------------------------------------------------------
+
+    async def trivia_settings(self, guild_id: str) -> dict[str, Any]:
+        """{"allow_global": bool, "announce_channel_id": str | None} (defaults if unset)."""
+        async with self.conn.execute(
+            "SELECT AllowGlobal, AnnounceChannelId FROM TriviaSettings WHERE GuildId = ?",
+            (guild_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return {"allow_global": True, "announce_channel_id": None}
+        return {
+            "allow_global": bool(row["AllowGlobal"]),
+            "announce_channel_id": row["AnnounceChannelId"] or None,
+        }
+
+    async def set_trivia_settings(
+        self, guild_id: str, *, allow_global: bool, announce_channel_id: str | None
+    ) -> None:
+        async with self._write_lock:
+            await self.conn.execute(
+                """
+                INSERT INTO TriviaSettings (GuildId, AllowGlobal, AnnounceChannelId)
+                VALUES (?, ?, ?)
+                ON CONFLICT(GuildId) DO UPDATE SET
+                    AllowGlobal = excluded.AllowGlobal,
+                    AnnounceChannelId = excluded.AnnounceChannelId
+                """,
+                (guild_id, int(allow_global), announce_channel_id),
+            )
+            await self.conn.commit()
+
+    async def trivia_announce_channels(self) -> list[tuple[str, str]]:
+        """(guild_id, channel_id) of servers that want cross-server match announcements."""
+        async with self.conn.execute(
+            """
+            SELECT GuildId, AnnounceChannelId FROM TriviaSettings
+            WHERE AllowGlobal = 1 AND COALESCE(AnnounceChannelId, '') != ''
+            """
+        ) as cursor:
+            return [(str(r["GuildId"]), str(r["AnnounceChannelId"])) async for r in cursor]
+
+    async def record_trivia_match(self, mode: str, players: Sequence[dict[str, Any]]) -> None:
+        """Add one finished match to each player's totals.
+
+        Each entry: guild_id, user_id, name, guild_name, points, correct,
+        answered, won (bool).
+        """
+        if mode not in {"server", "global"}:
+            raise ValueError(f"Invalid trivia mode: {mode}")
+        payload = [
+            (
+                str(p["guild_id"]), str(p["user_id"]), mode, p["name"], p["guild_name"],
+                int(p["points"]), int(p["correct"]), int(p["answered"]), int(bool(p["won"])),
+            )
+            for p in players
+        ]
+        if not payload:
+            return
+        async with self._write_lock:
+            await self.conn.executemany(
+                """
+                INSERT INTO TriviaScore
+                    (GuildId, UserId, Mode, DisplayName, GuildName,
+                     Points, Correct, Answered, Games, Wins, UpdatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'))
+                ON CONFLICT(GuildId, UserId, Mode) DO UPDATE SET
+                    DisplayName = excluded.DisplayName,
+                    GuildName = excluded.GuildName,
+                    Points = Points + excluded.Points,
+                    Correct = Correct + excluded.Correct,
+                    Answered = Answered + excluded.Answered,
+                    Games = Games + 1,
+                    Wins = Wins + excluded.Wins,
+                    UpdatedAt = datetime('now')
+                """,
+                payload,
+            )
+            await self.conn.commit()
+
+    async def trivia_leaderboard(
+        self, *, guild_id: str | None, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Top players: one server's (all modes), or cross-server (``guild_id=None``).
+
+        The cross-server board ranks points from cross-server matches, one row
+        per player per server, and leaves out servers that turned cross-server
+        play off.
+        """
+        if guild_id is not None:
+            sql = """
+                SELECT s.UserId,
+                       (SELECT x.DisplayName FROM TriviaScore x
+                        WHERE x.GuildId = s.GuildId AND x.UserId = s.UserId
+                        ORDER BY x.UpdatedAt DESC LIMIT 1) AS DisplayName,
+                       '' AS GuildName,
+                       sum(Points) AS Points, sum(Correct) AS Correct,
+                       sum(Answered) AS Answered, sum(Games) AS Games, sum(Wins) AS Wins
+                FROM TriviaScore s WHERE s.GuildId = ?
+                GROUP BY s.GuildId, s.UserId
+                ORDER BY Points DESC, Correct DESC LIMIT ?
+            """
+            params: tuple[Any, ...] = (guild_id, limit)
+        else:
+            sql = """
+                SELECT s.UserId, s.DisplayName, s.GuildName, s.Points, s.Correct,
+                       s.Answered, s.Games, s.Wins
+                FROM TriviaScore s
+                LEFT JOIN TriviaSettings t ON t.GuildId = s.GuildId
+                WHERE s.Mode = 'global' AND COALESCE(t.AllowGlobal, 1) = 1
+                ORDER BY s.Points DESC, s.Correct DESC LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(sql, params) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def delete_trivia_scores(self, guild_id: str) -> int:
+        """Delete a server's trivia scores (settings are kept); return rows removed."""
+        async with self._write_lock:
+            cursor = await self.conn.execute(
+                "DELETE FROM TriviaScore WHERE GuildId = ?", (guild_id,)
             )
             await self.conn.commit()
         return cursor.rowcount

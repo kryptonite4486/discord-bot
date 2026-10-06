@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 from bot.utils.backup import create_backup, last_backup_time, prune_older_than
 from bot.utils.names import group_variants
 from bot.utils.parsing import chunk_message
+from bot.utils.tiers import FeatureLocked, requires_feature
 from bot.utils.guild import (
     channel_id_from_interaction,
     guild_id_from_interaction,
@@ -130,6 +131,7 @@ class Admin(commands.Cog):
     @app_commands.describe(scope="This channel (default) or entire server")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.checks.has_permissions(administrator=True)
+    @requires_feature("name_tools")
     async def duplicates(
         self,
         interaction: discord.Interaction,
@@ -172,6 +174,7 @@ class Admin(commands.Cog):
     )
     @app_commands.choices(scope=SCOPE_CHOICES, on_conflict=CONFLICT_CHOICES)
     @app_commands.checks.has_permissions(administrator=True)
+    @requires_feature("name_tools")
     async def rename_player(
         self,
         interaction: discord.Interaction,
@@ -349,6 +352,8 @@ class Admin(commands.Cog):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
+        if isinstance(error, FeatureLocked):
+            return  # the upgrade message was already sent
         if isinstance(error, app_commands.errors.MissingPermissions):
             msg = "You need administrator permission for this command."
             if interaction.response.is_done():
