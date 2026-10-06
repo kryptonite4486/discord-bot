@@ -12,13 +12,23 @@ from bot.utils.tiers import FEATURE_NAMES, FREE, FULL, MID, TierStatus, quota_we
 CONTACT = "lastzassistant@gmail.com"
 
 
-def format_premium(status: TierStatus, used: int, *, enforced: bool) -> str:
+def _channel_cap(policy) -> str:
+    return "any" if policy.max_channels is None else str(policy.max_channels)
+
+
+def format_premium(
+    status: TierStatus, used: int, *, enforced: bool, channels: int | None = None
+) -> str:
     policy = status.policy
     limit = policy.ocr_images_per_week
     lines = [
         f"**Plan: {status.describe()}**",
         f"Screenshots this week: **{used} / {limit}** "
         f"(week started {quota_week_start().isoformat()}, resets Sunday UTC)",
+    ]
+    if channels is not None:
+        lines.append(f"Channels with data: **{channels} / {_channel_cap(policy)}**")
+    lines += [
         "",
         "**What each plan includes**",
         "```",
@@ -27,6 +37,8 @@ def format_premium(status: TierStatus, used: int, *, enforced: bool) -> str:
         f"{FREE.ocr_images_per_week:>8}{MID.ocr_images_per_week:>10}{FULL.ocr_images_per_week:>9}",
         f"{'Weeks of history in reports':<34}"
         f"{_weeks(FREE):>8}{_weeks(MID):>10}{_weeks(FULL):>9}",
+        f"{'Channels with data':<34}"
+        f"{_channel_cap(FREE):>8}{_channel_cap(MID):>10}{_channel_cap(FULL):>9}",
     ]
     for key, label in FEATURE_LABELS.items():
         marks = ["✓" if t.allows(key) else "–" for t in (FREE, MID, FULL)]
@@ -70,8 +82,10 @@ class Premium(commands.Cog):
         tiers = self.bot.tiers
         status = await tiers.status(guild_id)
         used = await tiers.ocr_used_this_week(guild_id)
+        channels = len(await self.bot.db.tracked_channels(guild_id))
         await interaction.followup.send(
-            format_premium(status, used, enforced=tiers.enforced), ephemeral=True
+            format_premium(status, used, enforced=tiers.enforced, channels=channels),
+            ephemeral=True,
         )
 
 

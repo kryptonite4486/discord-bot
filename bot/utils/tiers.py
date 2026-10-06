@@ -6,6 +6,10 @@ only enforced when TIERS_ENFORCED is on; otherwise every check passes and
 the bot logs what it would have blocked, so tiers can be rolled out (and
 gifts granted) before anyone loses access.
 
+Each tier also caps how many channels (datasets) hold data. A server over
+its cap after a downgrade keeps all its data, and keeps adding data in its
+most recently used channels; see writable_channels.
+
 See docs/monetization-plan.md, sections 3 and 5.
 """
 
@@ -39,6 +43,7 @@ class TierPolicy:
     # Weeks of history reports show, counting the current week; None = all.
     # Older weeks are hidden, never deleted.
     history_weeks: int | None = None
+    max_channels: int | None = None  # tracked channels (datasets); None = unlimited
     features: frozenset[str] = field(default_factory=frozenset)
 
     def allows(self, feature: str) -> bool:
@@ -52,13 +57,14 @@ class TierPolicy:
         return (start - timedelta(weeks=self.history_weeks - 1)).isoformat()
 
 
-FREE = TierPolicy("free", "Free", 0, ocr_images_per_week=25, history_weeks=4)
+FREE = TierPolicy("free", "Free", 0, ocr_images_per_week=25, history_weeks=4, max_channels=1)
 MID = TierPolicy(
     "mid",
     "Alliance",
     1,
     ocr_images_per_week=250,
     history_weeks=26,
+    max_channels=3,
     features=frozenset({"zip_batch", "advanced_reports", "name_tools"}),
 )
 FULL = TierPolicy(
@@ -66,6 +72,7 @@ FULL = TierPolicy(
     "Command",
     2,
     ocr_images_per_week=1000,
+    max_channels=None,
     features=MID.features | {"multi_channel_reports"},
 )
 TIERS = {t.key: t for t in (FREE, MID, FULL)}
@@ -82,6 +89,34 @@ SOURCE_NAMES = {
 
 def lowest_tier_with(feature: str) -> TierPolicy:
     return next(t for t in (FREE, MID, FULL) if t.allows(feature))
+
+
+def lowest_tier_with_channels(count: int) -> TierPolicy:
+    """Cheapest tier that can take new data in ``count`` channels."""
+    return next(
+        t for t in (FREE, MID, FULL) if t.max_channels is None or t.max_channels >= count
+    )
+
+
+def writable_channels(tracked: list[str], policy: TierPolicy) -> list[str]:
+    """Tracked channels that may take new data under ``policy``.
+
+    ``tracked`` is ordered most recently written first. A server over its
+    limit (after a downgrade) keeps writing to its most recently used
+    channels; the rest stay readable in reports but take no new data.
+    """
+    if policy.max_channels is None:
+        return list(tracked)
+    return tracked[: policy.max_channels]
+
+
+def channel_allowed(channel_id: str, tracked: list[str], policy: TierPolicy) -> bool:
+    """Whether a write to ``channel_id`` fits the tier's channel limit."""
+    if policy.max_channels is None:
+        return True
+    if channel_id in tracked:
+        return channel_id in writable_channels(tracked, policy)
+    return len(tracked) < policy.max_channels
 
 
 def quota_week_start(now: datetime | None = None) -> date:
@@ -202,6 +237,32 @@ class Tiers:
         if not self.enforced:
             return None, status
         return status.policy.min_week(), status
+    async def check_channel(
+        self, guild_id: str, channel_id: str
+    ) -> tuple[bool, TierStatus, list[str]]:
+        """(allowed, status, tracked) for a write that adds data in ``channel_id``.
+
+        ``tracked`` lists the server's channels with data, most recently
+        written first. Not enforced: always allowed, but logged.
+        """
+        status = await self.status(guild_id)
+        if status.policy.max_channels is None:
+            return True, status, []
+        tracked = await self.db.tracked_channels(guild_id)
+        if channel_allowed(channel_id, tracked, status.policy):
+            return True, status, tracked
+        if not self.enforced:
+            log.info(
+                "Channel limit (not enforced): guild %s on %s would be refused data in "
+                "channel %s (%d channel(s) tracked, limit %d)",
+                guild_id,
+                status.policy.name,
+                channel_id,
+                len(tracked),
+                status.policy.max_channels,
+            )
+            return True, status, tracked
+        return False, status, tracked
 
     async def ocr_used_this_week(self, guild_id: str) -> int:
         since = quota_week_start().isoformat()
@@ -247,6 +308,56 @@ def upgrade_message(feature: str, status: TierStatus) -> str:
         f"or higher. This server is on **{status.describe()}**. "
         f"Run `/premium` to see what each plan includes."
     )
+
+
+def _channel_list(channel_ids: list[str]) -> str:
+    return ", ".join(f"<#{c}>" for c in channel_ids)
+
+
+def channel_limit_message(channel_id: str, tracked: list[str], status: TierStatus) -> str:
+    """Why new data can't go in ``channel_id``, naming the channels that can take it."""
+    policy = status.policy
+    limit = policy.max_channels or 0
+    writable = writable_channels(tracked, policy)
+    needed = lowest_tier_with_channels(len(tracked) + (channel_id not in tracked))
+    plural = "channel" if limit == 1 else "channels"
+    lines = [
+        f"🔒 The **{policy.name}** plan adds new data in up to **{limit}** {plural}. "
+        f"This server is on **{status.describe()}**."
+    ]
+    if channel_id in tracked:
+        lines.append(
+            "This channel's data is kept and still shows in reports, but new data "
+            f"can only be added in the {limit} most recently used {plural}: "
+            f"{_channel_list(writable)}."
+        )
+    else:
+        lines.append(f"Add data in {_channel_list(writable)} instead.")
+    lines.append(
+        f"The **{needed.name}** plan takes data here too. "
+        "Run `/premium` to see what each plan includes."
+    )
+    return "\n".join(lines)
+
+
+async def ensure_channel(interaction) -> bool:
+    """Reply and return False if new data can't go in this channel on this plan.
+
+    Same reply rules as ensure_feature. Call before writing data.
+    """
+    tiers = getattr(getattr(interaction, "client", None), "tiers", None)
+    if tiers is None or interaction.guild_id is None or interaction.channel_id is None:
+        return True
+    channel_id = str(interaction.channel_id)
+    allowed, status, tracked = await tiers.check_channel(str(interaction.guild_id), channel_id)
+    if allowed:
+        return True
+    text = channel_limit_message(channel_id, tracked, status)
+    if interaction.response.is_done():
+        await interaction.followup.send(text, ephemeral=True)
+    else:
+        await interaction.response.send_message(text, ephemeral=True)
+    return False
 
 
 async def ensure_feature(interaction, feature: str) -> bool:

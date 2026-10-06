@@ -1114,6 +1114,24 @@ class Database:
             rows = await cursor.fetchall()
         return [(str(r["ChannelId"]), int(r["c"])) for r in rows]
 
+    async def tracked_channels(self, guild_id: str) -> list[str]:
+        """Channels holding data in a guild, most recently written first.
+
+        Unassigned rows (ChannelId '') aren't a channel and are left out.
+        Ties on UpdatedAt fall back to ChannelId so the order is stable.
+        """
+        async with self.conn.execute(
+            """
+            SELECT ChannelId, MAX(UpdatedAt) AS last
+            FROM WeeklyMetrics
+            WHERE GuildId = ? AND ChannelId != ?
+            GROUP BY ChannelId
+            ORDER BY last DESC, ChannelId
+            """,
+            (guild_id, UNASSIGNED_CHANNEL_ID),
+        ) as cursor:
+            return [str(r["ChannelId"]) async for r in cursor]
+
     async def add_usage(
         self, guild_id: str, day: str, amounts: dict[str, float]
     ) -> None:

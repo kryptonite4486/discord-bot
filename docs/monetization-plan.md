@@ -78,6 +78,7 @@ The unit of sale is **one Discord server**, which is usually one alliance. Allia
 
 Notes:
 - **Every upload goes through a slash command that names the dataset.** There is no auto-OCR channel; it saved only a few keystrokes once image-type detection was removed, and it depended on the Message Content intent.
+- **The channel limit never deletes data.** A write that would start data in a channel past the limit is refused, naming the channels that can take it. A server over its limit (after a downgrade) keeps every channel in reports, and the most recently written channels (by latest `UpdatedAt`) stay writable, up to the limit. Most-recent-first follows what the alliance is actively using, needs no extra setting, and stays stable because read-only channels can't move up the order. The cost: a rename or channel reassignment updates rows too, so it counts as use.
 - **Keep data-quality features free.** Mix-up flags and manual entry make free data trustworthy, and trustworthy history is what makes people pay to see more of it.
 - **Retention limits hide history, they don't delete it.** Upgrading reveals all history at once, which is a strong conversion moment.
 - **OCR quota is the main cost lever.** Tune the numbers once the capacity benchmark (§2 item 14) is done. If one Mac can't handle 1,000 images per week per Full server at peak, cap Full at a lower number or add a cloud fallback before selling more.
