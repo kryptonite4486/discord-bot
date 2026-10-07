@@ -12,6 +12,11 @@ trivia channel, matches run only there (bot/utils/channel_rules.py).
 Answers are buttons, so the bot never needs to read messages (it has no
 Message Content intent). Matches live in memory and end if the bot
 restarts; finished matches add to each player's totals in TriviaScore.
+
+Plans: Free servers get the Last Z questions only, Alliance adds the
+standard bank, and Command adds the extended bank and cross-server play
+(hosting, joining and invitations). Without TIERS_ENFORCED every server
+gets everything.
 """
 
 from __future__ import annotations
@@ -32,17 +37,21 @@ from bot.cogs.data import ConfirmDeleteView
 from bot.trivia.engine import AnswerResult, Match, Mode, Player, RoundResult
 from bot.trivia.questions import (
     DIFFICULTIES,
+    TIER_KEYS,
     AskedQuestion,
     Question,
     categories,
     load_bank,
     pick_questions,
+    pool_for,
 )
 from bot.utils.guild import guild_id_from_interaction
+from bot.utils.tiers import FeatureLocked, requires_feature, upgrade_message
 
 log = logging.getLogger(__name__)
 
 LETTERS = "ABCD"
+CROSS_SERVER = "cross_server_trivia"  # tier feature (bot/utils/tiers.py)
 SERVER_COUNTDOWN = 5  # seconds between /trivia start and the first question
 LOBBY_SECONDS = 45  # how long a cross-server lobby stays open
 REVEAL_PAUSE = 5  # seconds the answer shows before the next question
@@ -345,10 +354,13 @@ class Trivia(commands.Cog):
             # A bad custom bank shouldn't keep the rest of the bot from starting.
             log.error("TRIVIA_QUESTIONS_PATH %s unusable (%s); using the bundled questions", path, exc)
             path, self.bank = None, load_bank()
-        self.categories = categories(self.bank)
+        # Questions and categories per plan key ("free", "mid", "full").
+        self.pools = {key: pool_for(self.bank, key) for key in TIER_KEYS}
+        self.categories = {key: categories(pool) for key, pool in self.pools.items()}
         log.info(
-            "Trivia bank: %d questions in %d categories (%s)",
-            len(self.bank), len(self.categories), path or "bundled",
+            "Trivia bank: %d questions in %d categories (%s); per plan: %s",
+            len(self.bank), len(self.categories["full"]), path or "bundled",
+            ", ".join(f"{key} {len(pool)}" for key, pool in self.pools.items()),
         )
         self.games: dict[int, Game] = {}  # channel_id -> game
         self.lobby: Game | None = None  # the open cross-server lobby, if any
@@ -386,6 +398,8 @@ class Trivia(commands.Cog):
         difficulty: app_commands.Choice[str] | None = None,
     ) -> None:
         cross_server = mode is not None and mode.value == Mode.GLOBAL.value
+        if cross_server and not await self._ensure_cross_server(interaction):
+            return
         if cross_server and self.lobby is not None:
             # One lobby at a time: starting a cross-server match joins it.
             await self.join_lobby(interaction, self.lobby, note_ignored=True)
@@ -393,12 +407,15 @@ class Trivia(commands.Cog):
         if not await self._check_channel(interaction):
             return
         guild_id = guild_id_from_interaction(interaction)
+        tier = await self._tier_key(guild_id)
         if category is not None:
-            match = next((c for c in self.categories if c.lower() == category.lower()), None)
+            match = next(
+                (c for c in self.categories[tier] if c.lower() == category.lower()), None
+            )
             if match is None:
                 await interaction.response.send_message(
                     f"Unknown category `{category}`. Pick one from the list: "
-                    + ", ".join(self.categories),
+                    + ", ".join(self.categories[tier]),
                     ephemeral=True,
                 )
                 return
@@ -422,7 +439,7 @@ class Trivia(commands.Cog):
 
         diff = difficulty.value if difficulty else None
         asked = pick_questions(
-            self.bank, questions, category=category, difficulty=diff,
+            self.pools[tier], questions, category=category, difficulty=diff,
             avoid=self._recent.get(guild_id, ()),
         )
         if len(asked) < 3:
@@ -473,13 +490,15 @@ class Trivia(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         current = current.lower()
+        tier = await self._tier_key(guild_id_from_interaction(interaction))
         return [
             app_commands.Choice(name=c, value=c)
-            for c in self.categories
+            for c in self.categories[tier]
             if current in c.lower()
         ][:25]
 
     @trivia.command(name="join", description="Join the open cross-server trivia match from this channel")
+    @requires_feature(CROSS_SERVER)
     async def join(self, interaction: discord.Interaction) -> None:
         if self.lobby is None:
             await interaction.response.send_message(
@@ -625,6 +644,8 @@ class Trivia(commands.Cog):
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
+        if isinstance(error, FeatureLocked):
+            return  # the upgrade message was already sent
         if isinstance(error, app_commands.MissingPermissions):
             needed = " and ".join(p.replace("_", " ").title() for p in error.missing_permissions)
             text = f"You need the {needed} permission for this command."
@@ -653,6 +674,8 @@ class Trivia(commands.Cog):
             )
             return
         if not await self._check_channel(interaction):
+            return
+        if not await self._ensure_cross_server(interaction):
             return
         guild_id = guild_id_from_interaction(interaction)
         if not (await self.bot.db.trivia_settings(guild_id))["allow_global"]:
@@ -688,7 +711,7 @@ class Trivia(commands.Cog):
 
     async def _send_invites(self, game: Game, *, exclude_guild: str) -> None:
         for guild_id, channel_id in await self.bot.db.trivia_announce_channels():
-            if guild_id == exclude_guild:
+            if guild_id == exclude_guild or not await self._has_cross_server(guild_id):
                 continue
             channel = self.bot.get_channel(int(channel_id))
             if channel is None or not isinstance(channel, discord.abc.Messageable):
@@ -895,6 +918,32 @@ class Trivia(commands.Cog):
             await interaction.response.send_message(problem, ephemeral=True)
             return False
         return True
+
+    async def _tier_key(self, guild_id: str) -> str:
+        """Plan key whose questions this server gets."""
+        tiers = getattr(self.bot, "tiers", None)
+        if tiers is None:
+            return "full"
+        return (await tiers.trivia_tier(guild_id)).key
+
+    async def _ensure_cross_server(self, interaction: discord.Interaction) -> bool:
+        """Reply with the upgrade message and return False if the plan lacks cross-server play."""
+        tiers = getattr(self.bot, "tiers", None)
+        if tiers is None or interaction.guild_id is None:
+            return True
+        allowed, status = await tiers.check_feature(str(interaction.guild_id), CROSS_SERVER)
+        if not allowed:
+            await interaction.response.send_message(
+                upgrade_message(CROSS_SERVER, status), ephemeral=True
+            )
+        return allowed
+
+    async def _has_cross_server(self, guild_id: str) -> bool:
+        """Whether to invite this server; quiet, unlike check_feature's log line."""
+        tiers = getattr(self.bot, "tiers", None)
+        if tiers is None or not tiers.enforced:
+            return True
+        return (await tiers.status(guild_id)).policy.allows(CROSS_SERVER)
 
     def _seat(self, interaction: discord.Interaction) -> Seat:
         return Seat(

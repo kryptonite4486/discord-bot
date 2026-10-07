@@ -5,9 +5,14 @@ needs no third-party service. ``TRIVIA_QUESTIONS_PATH`` points at a
 replacement file in the same format:
 
     {"category": "Science", "difficulty": "easy", "question": "...",
-     "correct": "...", "incorrect": ["...", "...", "..."]}
+     "correct": "...", "incorrect": ["...", "...", "..."], "tier": "mid"}
 
 ``incorrect`` holds one to three wrong answers, so true/false questions work.
+
+``tier`` is the cheapest plan that gets the question (``free``, ``mid`` for
+Alliance, ``full`` for Command; default ``mid``), and each plan also gets the
+questions of the plans below it: Free gets only the Last Z questions, Alliance
+adds the standard bank, Command adds the extended one. See pool_for.
 """
 
 from __future__ import annotations
@@ -21,6 +26,9 @@ from typing import Iterable, Sequence
 
 BUNDLED_BANK = Path(__file__).with_name("questions.json")
 DIFFICULTIES = ("easy", "medium", "hard")
+# Plan keys, cheapest first (TierPolicy.key in bot/utils/tiers.py).
+TIER_KEYS = ("free", "mid", "full")
+DEFAULT_TIER = "mid"
 # Discord button labels max out at 80 characters, with room for "A. ".
 MAX_CHOICE_LEN = 76
 MAX_QUESTION_LEN = 300
@@ -34,6 +42,7 @@ class Question:
     text: str
     correct: str
     incorrect: tuple[str, ...]
+    tier: str = DEFAULT_TIER
 
 
 @dataclass(frozen=True)
@@ -65,6 +74,7 @@ def parse_bank(entries: Iterable[dict]) -> list[Question]:
             incorrect = tuple(str(x).strip() for x in raw["incorrect"])
             category = str(raw.get("category") or "General Knowledge").strip()
             difficulty = str(raw.get("difficulty") or "medium").strip().lower()
+            tier = str(raw.get("tier") or DEFAULT_TIER).strip().lower()
         except (KeyError, TypeError) as exc:
             raise ValueError(f"Question {n}: missing or invalid field ({exc})") from exc
         problem = None
@@ -78,13 +88,15 @@ def parse_bank(entries: Iterable[dict]) -> list[Question]:
             problem = "answers must all be different"
         elif difficulty not in DIFFICULTIES:
             problem = f"difficulty must be one of {', '.join(DIFFICULTIES)}"
+        elif tier not in TIER_KEYS:
+            problem = f"tier must be one of {', '.join(TIER_KEYS)}"
         if problem:
             raise ValueError(f"Question {n} ({text[:40]!r}): {problem}")
         qid = _question_id(text)
         if qid in seen:
             raise ValueError(f"Question {n} ({text[:40]!r}) is a duplicate")
         seen.add(qid)
-        questions.append(Question(qid, category, difficulty, text, correct, incorrect))
+        questions.append(Question(qid, category, difficulty, text, correct, incorrect, tier))
     if not questions:
         raise ValueError("The question bank is empty")
     return questions
@@ -97,6 +109,16 @@ def load_bank(path: Path | None = None) -> list[Question]:
     if not isinstance(data, list):
         raise ValueError(f"{path}: expected a JSON list of questions")
     return parse_bank(data)
+
+
+def pool_for(bank: Sequence[Question], tier: str) -> list[Question]:
+    """The questions a server on ``tier`` gets: its own and every cheaper plan's.
+
+    A bank with none of them (a custom bank that tags nothing ``free``, say)
+    is used whole, so no plan is ever left without questions.
+    """
+    allowed = TIER_KEYS[: TIER_KEYS.index(tier) + 1]
+    return [q for q in bank if q.tier in allowed] or list(bank)
 
 
 def categories(bank: Sequence[Question]) -> list[str]:

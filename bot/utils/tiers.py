@@ -33,6 +33,7 @@ FEATURE_NAMES = {
     "multi_channel_reports": "reports covering more than one channel",
     "clean_charts": "charts without the Free-plan watermark",
     "export": "CSV and JSON exports (`/data export`)",
+    "cross_server_trivia": "cross-server trivia matches",
 }
 
 
@@ -80,7 +81,7 @@ FULL = TierPolicy(
     2,
     ocr_images_per_week=1000,
     max_channels=None,
-    features=MID.features | {"multi_channel_reports"},
+    features=MID.features | {"multi_channel_reports", "cross_server_trivia"},
     queue_priority=2,
 )
 TIERS = {t.key: t for t in (FREE, MID, FULL)}
@@ -303,6 +304,15 @@ class Tiers:
         if not self.enforced:
             return False
         return not (await self.status(guild_id)).policy.allows("clean_charts")
+
+    async def trivia_tier(self, guild_id: str) -> TierPolicy:
+        """Whose trivia questions this server gets (bot/trivia/questions.py pool_for).
+
+        Not enforced: Command's, so every server gets every question.
+        """
+        if not self.enforced:
+            return FULL
+        return (await self.status(guild_id)).policy
 
     async def ocr_used_this_week(self, guild_id: str) -> int:
         since = quota_week_start().isoformat()

@@ -65,7 +65,7 @@ Planner
 
 Trivia (multiple choice; answer with the buttons)
   /trivia start     Start a match in this channel
-                    mode:Cross-server opens it to other servers for 45s
+                    mode:Cross-server opens it to other servers for 45s (Command)
   /trivia join      Join the open cross-server match from this channel
   /trivia stop      Stop the match here (a cross-server match goes on elsewhere)
   /trivia leaderboard  All-time scores (scope:Cross-server for every server)
