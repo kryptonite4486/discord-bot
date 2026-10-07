@@ -29,6 +29,7 @@ GUILD = "111"
 CHANNEL = "222"
 OPERATOR = 1
 CONTROL = 100
+SUPPORT = "https://discord.gg/support"
 
 
 def ts(days: float, base: datetime = NOW) -> str:
@@ -43,7 +44,9 @@ class _Case(unittest.IsolatedAsyncioTestCase):
         self.tiers = Tiers(self.db, enforced=False)
         self.bot = SimpleNamespace(
             db=self.db, tiers=self.tiers, guilds=[],
-            settings=SimpleNamespace(control_guild_id=CONTROL, bot_owner_ids={OPERATOR}),
+            settings=SimpleNamespace(
+                control_guild_id=CONTROL, bot_owner_ids={OPERATOR}, support_url=SUPPORT
+            ),
             get_guild=lambda gid: None,
         )
         self.premium = Premium(self.bot)  # type: ignore[arg-type]
@@ -265,6 +268,7 @@ class PremiumTrialTests(_Case):
         kwargs = inter.followup.send.await_args.kwargs
         self.assertIsInstance(kwargs["view"], TrialView)
         self.assertIn("Free trial:", inter.followup.send.await_args.args[0])
+        self.assertIn(f"[support server](<{SUPPORT}>)", inter.followup.send.await_args.args[0])
 
         inter = self._interaction(manage=False)
         await self.premium.premium.callback(self.premium, inter)

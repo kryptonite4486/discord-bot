@@ -101,8 +101,20 @@ class HelpCmd(commands.Cog):
     async def help_slash(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         text = await help_with_locks(interaction, HELP_TEXT, self.bot.tree.walk_commands())
-        for chunk in chunk_message(text, limit=1900):
+        text += "\n\nQuestions or a bug? Ask in our support server's #help channel."
+        chunks = list(chunk_message(text, limit=1900))
+        for chunk in chunks[:-1]:
             await interaction.followup.send(chunk, ephemeral=True)
+        await interaction.followup.send(chunks[-1], ephemeral=True, view=support_view(self.bot))
+
+
+def support_view(bot: commands.Bot) -> discord.ui.View:
+    """A link button to the support server."""
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Button(label="Support server", url=bot.settings.support_url, emoji="💬")  # type: ignore[attr-defined]
+    )
+    return view
 
 
 async def setup(bot: commands.Bot) -> None:

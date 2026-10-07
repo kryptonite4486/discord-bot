@@ -59,6 +59,7 @@ def format_premium(
     channels: int | None = None,
     trial_note: str | None = None,
     now: datetime | None = None,
+    support_url: str | None = None,
 ) -> str:
     policy = status.policy
     limit = policy.ocr_images_per_week
@@ -95,7 +96,8 @@ def format_premium(
             "\n_Plan limits aren't switched on yet, so everything currently works "
             "on every server._"
         )
-    lines.append(f"Paid plans aren't on sale yet. Questions: {CONTACT}")
+    support = f"[support server](<{support_url}>) or " if support_url else ""
+    lines.append(f"Paid plans aren't on sale yet. Questions: {support}{CONTACT}")
     return "\n".join(lines)
 
 
@@ -253,7 +255,12 @@ class Premium(commands.Cog):
         can_manage = bool(getattr(interaction.permissions, "manage_guild", False))
         note = trial_note(status, claimed_at, can_manage=can_manage, enforced=tiers.enforced)
         text = format_premium(
-            status, used, enforced=tiers.enforced, channels=channels, trial_note=note
+            status,
+            used,
+            enforced=tiers.enforced,
+            channels=channels,
+            trial_note=note,
+            support_url=self.bot.settings.support_url,
         )
         if can_manage and trial_available(status, claimed_at):
             view = TrialView(self)
