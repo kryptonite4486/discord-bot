@@ -90,6 +90,8 @@ The unit of sale is **one Discord server**, which is usually one alliance. Allia
 | Server-wide (multi-channel) scope reports | — | — | ✅ |
 | Role-based command access *(new)* | — | — | ✅ |
 | Cross-server alliance linking *(new, later)* | — | — | ✅ |
+| Trivia questions | 25 (Last Z only) | + standard bank (89) | + extended bank (filtered Open Trivia DB, CC BY-SA 4.0, credited) |
+| Cross-server trivia | — | — | ✅ |
 | `/planner` link | ✅ | ✅ | ✅ |
 
 Notes:

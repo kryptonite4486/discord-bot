@@ -60,6 +60,7 @@ def format_premium(
     trial_note: str | None = None,
     now: datetime | None = None,
     support_url: str | None = None,
+    trivia_questions: tuple[int, int, int] | None = None,
 ) -> str:
     policy = status.policy
     limit = policy.ocr_images_per_week
@@ -84,6 +85,8 @@ def format_premium(
         _row("Weeks of history", *(_weeks(t) for t in PLANS)),
         _row("Channels with data", *(_channel_cap(t) for t in PLANS)),
     ]
+    if trivia_questions is not None:
+        lines.append(_row("Trivia questions", *trivia_questions))
     for key, label in FEATURE_LABELS.items():
         lines.append(_row(label, *("✓" if t.allows(key) else "–" for t in PLANS)))
     lines.append("```")
@@ -101,6 +104,14 @@ def format_premium(
     return "\n".join(lines)
 
 
+def _trivia_questions(bot) -> tuple[int, int, int] | None:
+    """Questions per plan (Free, Alliance, Command), or None without trivia loaded."""
+    cog = bot.get_cog("Trivia") if hasattr(bot, "get_cog") else None
+    if cog is None:
+        return None
+    return tuple(len(cog.pools[t.key]) for t in PLANS)  # type: ignore[return-value]
+
+
 def _weeks(policy) -> str:
     return "All" if policy.history_weeks is None else str(policy.history_weeks)
 
@@ -113,6 +124,7 @@ FEATURE_LABELS = {
     "multi_channel_reports": "Server-wide reports",
     "clean_charts": "Unwatermarked charts",
     "export": "CSV/JSON export",
+    "cross_server_trivia": "Cross-server trivia",
 }
 assert set(FEATURE_LABELS) == set(FEATURE_NAMES), "label every gated feature"
 assert all(len(label) <= LABEL_WIDTH for label in FEATURE_LABELS.values()), "labels must fit"
@@ -261,6 +273,7 @@ class Premium(commands.Cog):
             channels=channels,
             trial_note=note,
             support_url=self.bot.settings.support_url,
+            trivia_questions=_trivia_questions(self.bot),
         )
         if can_manage and trial_available(status, claimed_at):
             view = TrialView(self)

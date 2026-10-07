@@ -28,7 +28,9 @@ from bot.trivia.questions import (  # noqa: E402
     load_bank,
     parse_bank,
     pick_questions,
+    pool_for,
 )
+from bot.utils.tiers import Tiers  # noqa: E402
 
 
 def _raw(text: str = "Q?", **kw) -> dict:
@@ -47,12 +49,31 @@ class QuestionBankTests(unittest.TestCase):
             "answers must all be different": [_raw(incorrect=["Yes", "no"])],
             "one to three": [_raw(incorrect=[])],
             "difficulty": [_raw(difficulty="extreme")],
+            "tier must be": [_raw(tier="gold")],
             "missing": [{"question": "Q?"}],
             "empty": [],
         }
         for reason, entries in cases.items():
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
                 parse_bank(entries)
+
+    def test_bundled_free_pool_is_25_last_z_questions(self) -> None:
+        bank = load_bank(BUNDLED_BANK)
+        free = pool_for(bank, "free")
+        self.assertEqual(len(free), 25)
+        self.assertEqual(categories(free), ["Last Z"])
+        self.assertNotIn("Last Z", categories([q for q in bank if q.tier != "free"]))
+
+    def test_pools_add_up_by_plan(self) -> None:
+        bank = parse_bank(
+            [_raw("F?", tier="free"), _raw("M?"), _raw("C?", tier="FULL")]
+        )
+        self.assertEqual(bank[1].tier, "mid")  # untagged questions are Alliance
+        texts = {k: [q.text for q in pool_for(bank, k)] for k in ("free", "mid", "full")}
+        self.assertEqual(texts, {"free": ["F?"], "mid": ["F?", "M?"], "full": ["F?", "M?", "C?"]})
+        # A custom bank with nothing for Free is used whole rather than left empty.
+        untagged = parse_bank([_raw("A?"), _raw("B?")])
+        self.assertEqual(len(pool_for(untagged, "free")), 2)
 
     def test_true_false_questions_are_allowed(self) -> None:
         (q,) = parse_bank([{"question": "Sky is blue?", "correct": "True", "incorrect": ["False"]}])
@@ -309,7 +330,9 @@ def _interaction(user: int, guild: FakeGuild, channel: FakeChannel, *, manage=Fa
     )
 
 
-class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
+class _CogCase(unittest.IsolatedAsyncioTestCase):
+    """A Trivia cog on a fake bot, with helpers to start and play matches."""
+
     async def asyncSetUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self._tmp.name) / "test.db")
@@ -349,6 +372,8 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
         )
         return self.cog.games.get(inter.channel_id)
 
+
+class TriviaCogTests(_CogCase):
     async def test_server_match_plays_scores_and_records(self) -> None:
         clicks: list[str] = []
 
@@ -514,6 +539,77 @@ class TriviaCogTests(unittest.IsolatedAsyncioTestCase):
         await self._start(inter, category="Basket weaving")
         self.assertIn("Unknown category", inter.replies[0][0])
         self.assertEqual(self.cog.games, {})
+
+
+
+class TriviaPlanTests(_CogCase):
+    """Question pools and cross-server play by plan, with tiers enforced."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.bot.tiers = Tiers(self.db, enforced=True)
+
+    async def grant(self, guild: FakeGuild, tier: str) -> None:
+        await self.db.add_entitlement(
+            str(guild.id), tier, "gift", starts_at="2000-01-01 00:00:00", ends_at=None,
+            granted_by="op", reason="test",
+        )
+
+    async def _asked_tiers(self, guild: FakeGuild, cid: int) -> set[str]:
+        game = await self._start(_interaction(10, guild, FakeChannel(cid)), questions=20)
+        game.stop_event.set()
+        await game.task
+        return {a.question.tier for a in game.match.questions}
+
+    async def test_free_gets_last_z_questions_and_alliance_adds_standard(self) -> None:
+        self.assertEqual(await self._asked_tiers(self.guild_a, 100), {"free"})
+        choices = await self.cog._category_autocomplete(_interaction(10, self.guild_a, FakeChannel(100)), "")
+        self.assertEqual([c.value for c in choices], ["Last Z"])
+        await self.grant(self.guild_b, "mid")
+        # 20 of Alliance's 114 can't all be among the 25 Last Z questions.
+        self.assertIn("mid", await self._asked_tiers(self.guild_b, 200))
+        inter = _interaction(10, self.guild_a, FakeChannel(101))
+        await self._start(inter, category="Science")
+        self.assertIn("Unknown category", inter.replies[0][0])
+
+    async def test_cross_server_needs_command(self) -> None:
+        await self.grant(self.guild_b, "mid")
+        refused = _interaction(20, self.guild_b, FakeChannel(200))
+        await self._start(refused, mode=SimpleNamespace(value="global"))
+        self.assertIn("Command", refused.replies[0][0])
+        self.assertIsNone(self.cog.lobby)
+
+        await self.grant(self.guild_a, "full")
+        guild_c = FakeGuild(id=3, name="Owls")
+        await self.grant(guild_c, "full")
+        for gid, cid in (("2", 300), ("3", 301)):
+            await self.db.set_trivia_channel(gid, str(cid))
+            self.channels[cid] = FakeChannel(cid)
+        game = await self._start(
+            _interaction(10, self.guild_a, FakeChannel(100)),
+            mode=SimpleNamespace(value="global"), seconds=5,
+        )
+        # Only the Command server is invited, and Alliance can't join.
+        self.assertEqual(self.channels[300].sent, [])
+        self.assertEqual(len(self.channels[301].sent), 1)
+        joiner = _interaction(20, self.guild_b, FakeChannel(201))
+        await self.cog.join_lobby(joiner, game)
+        self.assertIn("Command", joiner.replies[0][0])
+        self.assertEqual(set(game.seats), {100})
+        game.stop_event.set()
+        await game.task
+
+    async def test_not_enforced_everyone_gets_everything(self) -> None:
+        self.bot.tiers = Tiers(self.db, enforced=False)
+        choices = await self.cog._category_autocomplete(_interaction(10, self.guild_a, FakeChannel(100)), "")
+        self.assertIn("Science", [c.value for c in choices])
+        game = await self._start(
+            _interaction(10, self.guild_a, FakeChannel(100)),
+            mode=SimpleNamespace(value="global"), seconds=5,
+        )
+        self.assertIs(self.cog.lobby, game)
+        game.stop_event.set()
+        await game.task
 
 
 if __name__ == "__main__":
