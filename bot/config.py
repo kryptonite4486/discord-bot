@@ -74,6 +74,8 @@ def _heartbeat_url() -> str | None:
 
 
 DEFAULT_PLANNER_URL = "https://lastz-territory-planner.pages.dev"
+# Invite to the support server's #help channel, linked from /help and /premium.
+DEFAULT_SUPPORT_URL = "https://discord.gg/MM4KnfggUq"
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ class Settings:
     tiers_enforced: bool
     allow_unmounted_data: bool
     planner_url: str = DEFAULT_PLANNER_URL
+    support_url: str = DEFAULT_SUPPORT_URL
     # Per-user OCR ingest limit, per server (bot/utils/abuse.py). 0 turns a cap off.
     ingest_rate_window_minutes: int = 10
     ingest_rate_requests: int = 6
@@ -161,6 +164,7 @@ class Settings:
             planner_url=(
                 os.getenv("PLANNER_URL", "").strip().rstrip("/") or DEFAULT_PLANNER_URL
             ),
+            support_url=os.getenv("SUPPORT_URL", "").strip() or DEFAULT_SUPPORT_URL,
             ingest_rate_window_minutes=max(1, _optional_int("INGEST_RATE_WINDOW_MINUTES") or 10),
             ingest_rate_requests=_int_or("INGEST_RATE_REQUESTS", 6),
             ingest_rate_images=_int_or("INGEST_RATE_IMAGES", 60),

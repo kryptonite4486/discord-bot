@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 import discord  # noqa: E402
 
 from bot.cogs.planner import Planner, parse_share_link  # noqa: E402
-from bot.config import DEFAULT_PLANNER_URL, Settings  # noqa: E402
+from bot.config import DEFAULT_PLANNER_URL, DEFAULT_SUPPORT_URL, Settings  # noqa: E402
 
 BASE = "https://lastz-territory-planner.pages.dev"
 
@@ -106,6 +106,17 @@ class PlannerUrlSettingTests(unittest.TestCase):
     def test_override_drops_trailing_slash(self) -> None:
         s = self._settings(PLANNER_URL="https://planner.example.com/")
         self.assertEqual(s.planner_url, "https://planner.example.com")
+
+
+class SupportUrlSettingTests(unittest.TestCase):
+    _settings = PlannerUrlSettingTests._settings
+
+    def test_defaults_to_help_invite(self) -> None:
+        self.assertEqual(self._settings().support_url, DEFAULT_SUPPORT_URL)
+
+    def test_override(self) -> None:
+        s = self._settings(SUPPORT_URL=" https://discord.gg/other ")
+        self.assertEqual(s.support_url, "https://discord.gg/other")
 
 
 if __name__ == "__main__":

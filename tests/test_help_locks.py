@@ -120,18 +120,27 @@ class HelpTextTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_help_command_sends_marked_text(self) -> None:
         sent: list[str] = []
+        views = []
 
-        async def send(text, ephemeral=False):
+        async def send(text, ephemeral=False, view=None):
             sent.append(text)
+            views.append(view)
 
         inter = _interaction(FREE, enforced=True)
         inter.response = SimpleNamespace(defer=AsyncMock())
         inter.followup = SimpleNamespace(send=send)
-        bot = SimpleNamespace(tree=SimpleNamespace(walk_commands=_commands))
+        bot = SimpleNamespace(
+            tree=SimpleNamespace(walk_commands=_commands),
+            settings=SimpleNamespace(support_url="https://discord.gg/support"),
+        )
         await HelpCmd.help_slash.callback(HelpCmd(bot), inter)  # type: ignore[arg-type]
         joined = "".join(sent)
         self.assertIn("/ingest zip       OCR every image in a .zip (up to 50)  🔒 Alliance", joined)
         self.assertIn("`/premium`", sent[-1])
+        self.assertIn("support server", sent[-1])
+        # Only the last message carries the support server button.
+        self.assertTrue(all(v is None for v in views[:-1]))
+        self.assertEqual([b.url for b in views[-1].children], ["https://discord.gg/support"])
 
 
 def _check(feature):
