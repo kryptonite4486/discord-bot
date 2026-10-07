@@ -1,8 +1,11 @@
 """Trivia question bank: loading, validation and picking questions for a match.
 
-The bank is a JSON list bundled with the bot (``questions.json``), so trivia
-needs no third-party service. ``TRIVIA_QUESTIONS_PATH`` points at a
-replacement file in the same format:
+The bank is bundled with the bot, so trivia needs no third-party service:
+our own questions (``questions.json``) and an imported, CC BY-SA 4.0 copy of
+Open Trivia DB (``questions_opentdb.json``, written by
+scripts/import_opentdb.py). ``TRIVIA_QUESTIONS_PATH`` points at a file that
+replaces both. A bank file is a JSON list of questions, or an object holding
+one under ``"questions"`` next to its credit and license:
 
     {"category": "Science", "difficulty": "easy", "question": "...",
      "correct": "...", "incorrect": ["...", "...", "..."], "tier": "mid"}
@@ -13,6 +16,9 @@ replacement file in the same format:
 Alliance, ``full`` for Command; default ``mid``), and each plan also gets the
 questions of the plans below it: Free gets only the Last Z questions, Alliance
 adds the standard bank, Command adds the extended one. See pool_for.
+
+``source`` (optional) names where a question comes from; SOURCE_CREDITS
+turns it into the credit shown under the question.
 """
 
 from __future__ import annotations
@@ -25,6 +31,10 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 BUNDLED_BANK = Path(__file__).with_name("questions.json")
+OPENTDB_BANK = Path(__file__).with_name("questions_opentdb.json")
+BUNDLED_BANKS = (BUNDLED_BANK, OPENTDB_BANK)
+# Shown in the footer of questions from a source that must be credited.
+SOURCE_CREDITS = {"opentdb": "Open Trivia DB (CC BY-SA 4.0)"}
 DIFFICULTIES = ("easy", "medium", "hard")
 # Plan keys, cheapest first (TierPolicy.key in bot/utils/tiers.py).
 TIER_KEYS = ("free", "mid", "full")
@@ -43,6 +53,11 @@ class Question:
     correct: str
     incorrect: tuple[str, ...]
     tier: str = DEFAULT_TIER
+    source: str | None = None
+
+    @property
+    def credit(self) -> str | None:
+        return SOURCE_CREDITS.get(self.source) if self.source else None
 
 
 @dataclass(frozen=True)
@@ -75,6 +90,7 @@ def parse_bank(entries: Iterable[dict]) -> list[Question]:
             category = str(raw.get("category") or "General Knowledge").strip()
             difficulty = str(raw.get("difficulty") or "medium").strip().lower()
             tier = str(raw.get("tier") or DEFAULT_TIER).strip().lower()
+            source = str(raw.get("source") or "").strip().lower() or None
         except (KeyError, TypeError) as exc:
             raise ValueError(f"Question {n}: missing or invalid field ({exc})") from exc
         problem = None
@@ -96,19 +112,27 @@ def parse_bank(entries: Iterable[dict]) -> list[Question]:
         if qid in seen:
             raise ValueError(f"Question {n} ({text[:40]!r}) is a duplicate")
         seen.add(qid)
-        questions.append(Question(qid, category, difficulty, text, correct, incorrect, tier))
+        questions.append(Question(qid, category, difficulty, text, correct, incorrect, tier, source)
+        )
     if not questions:
         raise ValueError("The question bank is empty")
     return questions
 
 
-def load_bank(path: Path | None = None) -> list[Question]:
-    path = path or BUNDLED_BANK
+def _read_entries(path: Path) -> list:
     with path.open(encoding="utf-8") as fh:
         data = json.load(fh)
+    if isinstance(data, dict):
+        data = data.get("questions")
     if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a JSON list of questions")
-    return parse_bank(data)
+        raise ValueError(f"{path}: expected a JSON list of questions, or an object with one")
+    return data
+
+
+def load_bank(path: Path | None = None) -> list[Question]:
+    """One bank file, or with no path every bundled one (duplicates across them rejected)."""
+    paths = (path,) if path is not None else BUNDLED_BANKS
+    return parse_bank([entry for p in paths for entry in _read_entries(p)])
 
 
 def pool_for(bank: Sequence[Question], tier: str) -> list[Question]:

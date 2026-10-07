@@ -101,7 +101,12 @@ class HelpCmd(commands.Cog):
     async def help_slash(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         text = await help_with_locks(interaction, HELP_TEXT, self.bot.tree.walk_commands())
-        text += "\n\nQuestions or a bug? Ask in our support server's #help channel."
+        text += (
+            "\n\nTrivia questions marked \"via Open Trivia DB\" come from "
+            "<https://opentdb.com>, edited and used under CC BY-SA 4.0 "
+            "(<https://creativecommons.org/licenses/by-sa/4.0/>)."
+            "\n\nQuestions or a bug? Ask in our support server's #help channel."
+        )
         chunks = list(chunk_message(text, limit=1900))
         for chunk in chunks[:-1]:
             await interaction.followup.send(chunk, ephemeral=True)

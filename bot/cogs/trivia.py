@@ -199,8 +199,16 @@ def question_embed(game: Game, asked: AskedQuestion) -> discord.Embed:
         + f"\n\nCloses {discord.utils.format_dt(closes, 'R')}",
         color=COLOR,
     )
-    embed.set_footer(text=f"{q.category} · {q.difficulty.title()}")
+    embed.set_footer(text=question_footer(q))
     return embed
+
+
+def question_footer(q: Question) -> str:
+    """Category and difficulty, plus the credit for questions that need one."""
+    parts = [q.category, q.difficulty.title()]
+    if q.credit:
+        parts.append(f"via {q.credit}")
+    return " · ".join(parts)
 
 
 def _standings_lines(game: Game, limit: int) -> list[str]:
@@ -245,6 +253,7 @@ def reveal_embed(game: Game, result: RoundResult) -> discord.Embed:
     standings = _standings_lines(game, 5)
     if standings:
         embed.add_field(name="Standings", value="\n".join(standings)[:1024], inline=False)
+    embed.set_footer(text=question_footer(asked.question))
     return embed
 
 
