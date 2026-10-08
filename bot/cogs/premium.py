@@ -1,5 +1,6 @@
 """/premium: this server's plan, its usage, and what each plan includes,
-with a button for server admins to start the free trial.
+with a button for server admins to start the free trial and, while
+BILLING_ENABLED is on, Discord's subscribe buttons.
 /redeem: claim a gift code for this server.
 
 The free trial is 14 days of Command, once per server ever and once per
@@ -22,11 +23,13 @@ from discord.ext import commands
 
 from bot.utils.guild import guild_id_from_interaction
 from bot.utils.gift_codes import AttemptLimiter, hash_code, normalize_code
+from bot.utils.skus import add_subscribe_buttons
 from bot.utils.tiers import (
     FEATURE_NAMES,
     FREE,
     FULL,
     MID,
+    PAID_TIERS,
     TIERS,
     TRIAL_DAYS,
     TRIAL_TIER,
@@ -64,6 +67,7 @@ def format_premium(
     now: datetime | None = None,
     support_url: str | None = None,
     trivia_questions: tuple[int, int, int] | None = None,
+    on_sale: bool = False,
 ) -> str:
     policy = status.policy
     limit = policy.ocr_images_per_week
@@ -103,8 +107,28 @@ def format_premium(
             "on every server._"
         )
     support = f"[support server](<{support_url}>) or " if support_url else ""
-    lines.append(f"Paid plans aren't on sale yet. Questions: {support}{CONTACT}")
+    if on_sale:
+        lines.append(
+            "Paid plans are per server and billed monthly by Discord. Cancel any time "
+            "in your Discord settings (Subscriptions); the plan runs to the end of the "
+            f"month you paid for. Questions: {support}{CONTACT}"
+        )
+    else:
+        lines.append(f"Paid plans aren't on sale yet. Questions: {support}{CONTACT}")
     return "\n".join(lines)
+
+
+def plans_to_offer(status: TierStatus, active: list[dict]) -> list:
+    """Paid plans worth a subscribe button: above any Discord subscription
+    the server already has, and not below a plan it has with no end date."""
+    subscribed = max(
+        (TIERS[r["Tier"]].rank for r in active if r["Source"] == "discord" and r["Tier"] in TIERS),
+        default=0,
+    )
+    return [
+        t for t in PAID_TIERS
+        if t.rank > subscribed and (status.ends_at is not None or t.rank > status.policy.rank)
+    ]
 
 
 def _trivia_questions(bot) -> tuple[int, int, int] | None:
@@ -304,6 +328,11 @@ class Premium(commands.Cog):
         claimed_at = await self.bot.db.trial_claimed_at(guild_id)
         can_manage = bool(getattr(interaction.permissions, "manage_guild", False))
         note = trial_note(status, claimed_at, can_manage=can_manage, enforced=tiers.enforced)
+        on_sale = bool(getattr(self.bot.settings, "billing_enabled", False))
+        offer = []
+        if on_sale:
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            offer = plans_to_offer(status, await self.bot.db.active_entitlements(guild_id, now))
         text = format_premium(
             status,
             used,
@@ -312,12 +341,18 @@ class Premium(commands.Cog):
             trial_note=note,
             support_url=self.bot.settings.support_url,
             trivia_questions=_trivia_questions(self.bot),
+            on_sale=on_sale,
         )
-        if can_manage and trial_available(status, claimed_at):
-            view = TrialView(self)
-            view.message = await interaction.followup.send(text, ephemeral=True, view=view, wait=True)
-        else:
+        view = TrialView(self) if can_manage and trial_available(status, claimed_at) else None
+        if offer:
+            view = view or discord.ui.View(timeout=None)
+            add_subscribe_buttons(view, offer)
+        if view is None:
             await interaction.followup.send(text, ephemeral=True)
+        else:
+            message = await interaction.followup.send(text, ephemeral=True, view=view, wait=True)
+            if isinstance(view, TrialView):
+                view.message = message
 
     def _trial_owner(self, owner_id: int | None) -> str | None:
         """The owner a trial counts against; None (no per-owner limit) for

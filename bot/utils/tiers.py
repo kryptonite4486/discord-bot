@@ -403,10 +403,8 @@ async def ensure_channel(interaction) -> bool:
     if allowed:
         return True
     text = channel_limit_message(channel_id, tracked, status)
-    if interaction.response.is_done():
-        await interaction.followup.send(text, ephemeral=True)
-    else:
-        await interaction.response.send_message(text, ephemeral=True)
+    needed = lowest_tier_with_channels(len(tracked) + (channel_id not in tracked))
+    await _send_locked(interaction, text, needed)
     return False
 
 
@@ -422,12 +420,23 @@ async def ensure_feature(interaction, feature: str) -> bool:
     allowed, status = await tiers.check_feature(str(interaction.guild_id), feature)
     if allowed:
         return True
-    text = upgrade_message(feature, status)
-    if interaction.response.is_done():
-        await interaction.followup.send(text, ephemeral=True)
-    else:
-        await interaction.response.send_message(text, ephemeral=True)
+    await _send_locked(interaction, upgrade_message(feature, status), lowest_tier_with(feature))
     return False
+
+
+async def _send_locked(interaction, text: str, needed: TierPolicy) -> None:
+    """Send a "needs a higher plan" reply, with subscribe buttons for
+    ``needed`` and up while BILLING_ENABLED is on."""
+    from bot.utils.skus import subscribe_view  # skus imports this module
+
+    view = subscribe_view(
+        getattr(interaction, "client", None), [t for t in PAID_TIERS if t.rank >= needed.rank]
+    )
+    kwargs = {"ephemeral": True} if view is None else {"ephemeral": True, "view": view}
+    if interaction.response.is_done():
+        await interaction.followup.send(text, **kwargs)
+    else:
+        await interaction.response.send_message(text, **kwargs)
 
 
 def requires_feature(feature: str):

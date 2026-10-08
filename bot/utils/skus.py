@@ -21,6 +21,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import discord
+
 from bot.utils.tiers import PAID_TIERS, TIERS, TierPolicy
 
 MANIFEST_PATH = Path(__file__).with_name("skus.json")
@@ -118,3 +120,25 @@ def sku_id_for(tier: str) -> str | None:
 def tier_for_sku(sku_id: str | int) -> str | None:
     """The tier key a Discord SKU grants, or None for an unknown SKU."""
     return next((s["tier"] for s in _skus() if s.get("id") == str(sku_id)), None)
+
+
+def add_subscribe_buttons(view, policies) -> int:
+    """Add Discord's premium (subscribe) button for each tier in ``policies``
+    that has a SKU; return how many were added. Discord labels them itself."""
+    added = 0
+    for policy in policies:
+        sku_id = sku_id_for(policy.key)
+        if sku_id is not None:
+            view.add_item(discord.ui.Button(sku_id=int(sku_id)))
+            added += 1
+    return added
+
+
+def subscribe_view(client, policies):
+    """A view with subscribe buttons, or None while BILLING_ENABLED is off
+    (or there's nothing to sell)."""
+    settings = getattr(client, "settings", None)
+    if not getattr(settings, "billing_enabled", False):
+        return None
+    view = discord.ui.View(timeout=None)
+    return view if add_subscribe_buttons(view, policies) else None
