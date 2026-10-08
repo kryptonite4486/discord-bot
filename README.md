@@ -373,6 +373,23 @@ To add or redraw emojis, edit the generator, rerun it, then upload:
 
 The upload uses `DISCORD_TOKEN` from `.env` (`--env-file .env.testing` for the testing bot). Restart the bot afterwards to pick up new IDs.
 
+## Discord SKUs
+
+The paid plans are sold as two guild-subscription SKUs (Alliance, Command). Discord's API can list SKUs but not create or edit them, so they're kept by hand in the Developer Portal (Monetization → Manage SKUs). `bot/utils/skus.json` records what each one should be: SKU ID, name, monthly price, description and up to 6 benefits. Each benefit names the tier limits and features it promises, and the tests fail if those stop matching `bot/utils/tiers.py`, if the text breaks Discord's length limits, or if the site's prices differ.
+
+To change a listing, edit `skus.json` first, then copy it into the portal and check:
+
+```bash
+.venv/bin/python scripts/sync_skus.py portal                 # what to type into the portal
+.venv/bin/python scripts/sync_skus.py                        # portal matches skus.json?
+.venv/bin/python scripts/sync_skus.py --require-published    # ...and both are on sale
+.venv/bin/python scripts/sync_skus.py entitlements grant --guild <server id> --tier mid
+.venv/bin/python scripts/sync_skus.py entitlements list
+.venv/bin/python scripts/sync_skus.py entitlements remove --id <entitlement id>
+```
+
+The check sees only names, types and published state; price, description and benefits are compared by eye. A published SKU has to be unpublished to edit anything but its price, and a price change applies to new subscribers only. Test entitlements give a server a SKU without paying; the bot doesn't act on Discord entitlements yet.
+
 ## Policy site
 
 `site/` holds the public website: a home page, the Privacy Policy (`privacy.html`) and the Terms of Service (`terms.html`). It's plain static HTML with no build step, published as the Cloudflare Pages project **`lastz-assistant`** (`https://lastz-assistant.pages.dev`). Pages serves `privacy.html` at `/privacy`; use those URLs in the Discord Developer Portal (General Information → Privacy Policy URL and Terms of Service URL).

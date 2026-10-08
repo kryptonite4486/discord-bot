@@ -1,0 +1,96 @@
+{
+  "application_id": "1554267047918047252",
+  "group_id": "1557765913770729492",
+  "skus": [
+    {
+      "tier": "mid",
+      "id": "1557765914487689317",
+      "name": "Alliance Tier",
+      "price_usd": 7.99,
+      "description": "For a growing alliance: 250 screenshots a week, 3 tracked channels, half a year of history and the full set of player reports.",
+      "benefits": [
+        {
+          "emoji": "📸",
+          "name": "250 screenshots a week",
+          "description": "Read up to 250 screenshots a week into your rosters, with zip and bulk uploads and priority in the reading queue.",
+          "limits": {"ocr_images_per_week": 250, "queue_priority": 1},
+          "features": ["zip_batch"]
+        },
+        {
+          "emoji": "📁",
+          "name": "3 tracked channels",
+          "description": "Keep separate datasets in up to 3 channels, one for each event or competition you track.",
+          "limits": {"max_channels": 3}
+        },
+        {
+          "emoji": "📅",
+          "name": "26 weeks of history",
+          "description": "Reports reach back half a year. Older weeks are never deleted, only hidden, and come back if you upgrade.",
+          "limits": {"history_weeks": 26}
+        },
+        {
+          "emoji": "📈",
+          "name": "Player, trend and growth reports",
+          "description": "Follow each player's progress week to week with /report player, /report trend and /report growth.",
+          "features": ["advanced_reports"]
+        },
+        {
+          "emoji": "🧹",
+          "name": "Clean charts, name tools and export",
+          "description": "Charts without the Free-plan credit, duplicate-name and rename tools, and CSV/JSON export of your data.",
+          "features": ["clean_charts", "name_tools", "export"]
+        },
+        {
+          "emoji": "🧠",
+          "name": "A larger trivia bank",
+          "description": "The standard trivia bank on top of the Last Z questions."
+        }
+      ]
+    },
+    {
+      "tier": "full",
+      "id": "1557766045975060620",
+      "name": "Command Tier",
+      "price_usd": 19.99,
+      "description": "For alliances that track everything: 1,000 screenshots a week, unlimited channels and history, server-wide reports and the top queue spot.",
+      "benefits": [
+        {
+          "emoji": "📸",
+          "name": "1,000 screenshots a week",
+          "description": "A fair-use limit of 1,000 screenshots a week, with zip and bulk uploads and the highest priority in the reading queue.",
+          "limits": {"ocr_images_per_week": 1000, "queue_priority": 2},
+          "features": ["zip_batch"]
+        },
+        {
+          "emoji": "📁",
+          "name": "Unlimited channels and history",
+          "description": "Track as many channels as you like and see every week you have ever recorded.",
+          "limits": {"max_channels": null, "history_weeks": null}
+        },
+        {
+          "emoji": "🗺️",
+          "name": "Server-wide reports",
+          "description": "Reports that combine all your channels into one view of the whole server.",
+          "features": ["multi_channel_reports"]
+        },
+        {
+          "emoji": "⭐",
+          "name": "Everything in Alliance",
+          "description": "Player, trend and growth reports, clean charts, duplicate-name tools and CSV/JSON export.",
+          "features": ["advanced_reports", "clean_charts", "name_tools", "export"]
+        },
+        {
+          "emoji": "🧠",
+          "name": "5,000+ trivia questions",
+          "description": "The extended trivia bank from Open Trivia DB, on top of the standard and Last Z questions."
+        },
+        {
+          "emoji": "⚔️",
+          "name": "Cross-server trivia",
+          "description": "Challenge other servers to trivia matches.",
+          "features": ["cross_server_trivia"]
+        }
+      ]
+    }
+  ]
+}
