@@ -75,13 +75,18 @@ CREATE TABLE IF NOT EXISTS GuildEntitlement (
 CREATE INDEX IF NOT EXISTS idx_ent_guild
     ON GuildEntitlement (GuildId, RevokedAt, EndsAt);
 
+-- One row per Discord entitlement (bot/utils/billing.py); ExternalId is its ID.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ent_discord
+    ON GuildEntitlement (ExternalId) WHERE Source = 'discord';
+
 -- Who granted, revoked or extended which entitlement, and why.
 CREATE TABLE IF NOT EXISTS EntitlementAudit (
     Id      INTEGER PRIMARY KEY,
     At      TEXT NOT NULL DEFAULT (datetime('now')),
     ActorId TEXT,
     Action  TEXT NOT NULL,  -- grant | revoke | extend | redeem | code_create | code_revoke
-                            -- | trial | trial_reset
+                            -- | trial | trial_reset | discord_add | discord_update
+                            -- | discord_revoke
     GuildId TEXT NOT NULL,  -- '' for code_create and code_revoke
     Detail  TEXT
 );
@@ -1582,6 +1587,92 @@ class Database:
             "INSERT INTO EntitlementAudit (ActorId, Action, GuildId, Detail) VALUES (?, ?, ?, ?)",
             (actor_id, action, guild_id, detail),
         )
+
+    # --- Discord subscriptions (bot/utils/billing.py) -----------------------
+
+    async def sync_discord_entitlement(
+        self,
+        external_id: str,
+        guild_id: str,
+        tier: str,
+        *,
+        starts_at: str,
+        ends_at: str | None,
+        reason: str,
+    ) -> tuple[str, int]:
+        """Record a Discord entitlement as a Source='discord' row.
+
+        Returns (outcome, entitlement Id): 'added', 'updated' (tier or dates
+        changed) or 'unchanged'. A row that was revoked (refunded, or by an
+        operator) stays revoked.
+        """
+        async with self._write_lock:
+            async with self.conn.execute(
+                "SELECT * FROM GuildEntitlement WHERE Source = 'discord' AND ExternalId = ?",
+                (external_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                cursor = await self.conn.execute(
+                    """
+                    INSERT INTO GuildEntitlement
+                        (GuildId, Tier, Source, ExternalId, StartsAt, EndsAt, Reason)
+                    VALUES (?, ?, 'discord', ?, ?, ?, ?)
+                    """,
+                    (guild_id, tier, external_id, starts_at, ends_at, reason),
+                )
+                new_id = int(cursor.lastrowid)
+                await self._audit(
+                    None, "discord_add", guild_id,
+                    f"#{new_id} {tier} Discord entitlement {external_id} "
+                    f"until {ends_at or 'no end'}",
+                )
+                await self.conn.commit()
+                return "added", new_id
+            if (row["Tier"], row["StartsAt"], row["EndsAt"]) == (tier, starts_at, ends_at):
+                return "unchanged", int(row["Id"])
+            await self.conn.execute(
+                "UPDATE GuildEntitlement SET Tier = ?, StartsAt = ?, EndsAt = ?, Reason = ? "
+                "WHERE Id = ?",
+                (tier, starts_at, ends_at, reason, row["Id"]),
+            )
+            await self._audit(
+                None, "discord_update", row["GuildId"],
+                f"#{row['Id']} {tier} until {ends_at or 'no end'} (was {row['Tier']} "
+                f"until {row['EndsAt'] or 'no end'})",
+            )
+            await self.conn.commit()
+        return "updated", int(row["Id"])
+
+    async def revoke_discord_entitlement(
+        self, external_id: str, *, at: str, reason: str
+    ) -> dict[str, Any] | None:
+        """Revoke the row for a Discord entitlement that was deleted (refunded,
+        or a test entitlement removed). Returns the row, or None if there is
+        no such row or it was already revoked."""
+        async with self._write_lock:
+            async with self.conn.execute(
+                "SELECT * FROM GuildEntitlement WHERE Source = 'discord' AND ExternalId = ? "
+                "AND RevokedAt IS NULL",
+                (external_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            await self.conn.execute(
+                "UPDATE GuildEntitlement SET RevokedAt = ? WHERE Id = ?", (at, row["Id"])
+            )
+            await self._audit(None, "discord_revoke", row["GuildId"], f"#{row['Id']}: {reason}")
+            await self.conn.commit()
+        return dict(row)
+
+    async def unrevoked_discord_entitlements(self) -> list[dict[str, Any]]:
+        """Source='discord' rows not revoked, ended or not (for reconciling)."""
+        async with self.conn.execute(
+            "SELECT * FROM GuildEntitlement WHERE Source = 'discord' AND RevokedAt IS NULL "
+            "ORDER BY Id"
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
 
     # --- Free trials (/premium, /ops trial-reset) ---------------------------
 

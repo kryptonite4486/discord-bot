@@ -112,6 +112,9 @@ class Settings:
     # Start the free trial when the bot joins a new server (only while
     # tiers_enforced; bot/cogs/premium.py).
     auto_trial: bool = True
+    # Show Discord's subscribe buttons in /premium and upgrade messages. Leave
+    # off until the SKUs are published (bot/utils/skus.json).
+    billing_enabled: bool = False
     # None: the question bank bundled with the bot.
     trivia_questions_path: Path | None = None
     # Dead-man's-switch URL (healthchecks.io, Better Stack) pinged while healthy.
@@ -174,6 +177,7 @@ class Settings:
             ingest_rate_admin_multiplier=max(1, _optional_int("INGEST_RATE_ADMIN_MULTIPLIER") or 3),
             free_servers_per_owner=_int_or("FREE_SERVERS_PER_OWNER", 3),
             auto_trial=_env_bool("AUTO_TRIAL", True),
+            billing_enabled=_env_bool("BILLING_ENABLED", False),
             trivia_questions_path=(
                 Path(os.environ["TRIVIA_QUESTIONS_PATH"])
                 if os.getenv("TRIVIA_QUESTIONS_PATH", "").strip()

@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 COGS = (
     "bot.cogs.admin",
+    "bot.cogs.billing",
     "bot.cogs.data",
     "bot.cogs.gift_reminders",
     "bot.cogs.health",

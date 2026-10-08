@@ -388,7 +388,11 @@ To change a listing, edit `skus.json` first, then copy it into the portal and ch
 .venv/bin/python scripts/sync_skus.py entitlements remove --id <entitlement id>
 ```
 
-The check sees only names, types and published state; price, description and benefits are compared by eye. A published SKU has to be unpublished to edit anything but its price, and a price change applies to new subscribers only. Test entitlements give a server a SKU without paying; the bot doesn't act on Discord entitlements yet.
+The check sees only names, types and published state; price, description and benefits are compared by eye. A published SKU has to be unpublished to edit anything but its price, and a price change applies to new subscribers only. Test entitlements give a server a SKU without paying, and the bot treats them like a real subscription until they're removed.
+
+**Subscriptions.** The bot records each Discord entitlement for one of these SKUs as a `GuildEntitlement` row (`Source='discord'`, `ExternalId` = the entitlement ID), so a paid plan works like a gift or trial: the highest active plan wins, and a lapsed subscription falls back to any gift. Subscribing adds the row with no end date; Discord doesn't touch it on renewal or cancellation, and only sets an end when the subscription actually runs out. The bot keeps the plan for `PAID_GRACE_DAYS` (7) after that end, because Discord doesn't say whether it was cancelled or a payment failed. A refund deletes the entitlement and the plan goes at once. Each new gateway session (startup, or a reconnect that couldn't resume) fetches the full list and reconciles, so events missed while the bot was down are caught up, and a row whose entitlement is no longer listed is revoked. Every change is in `EntitlementAudit` (`discord_add`, `discord_update`, `discord_revoke`). A new subscription posts a thank-you in the server's report channel, if one is set. The code is in `bot/utils/billing.py` and `bot/cogs/billing.py`.
+
+**Selling.** `BILLING_ENABLED=true` adds Discord's subscribe buttons to `/premium` (plans above the server's current subscription) and to every "needs a higher plan" reply (the plan needed and up). Leave it off until the SKUs are published. Subscriptions are recorded either way.
 
 ## Policy site
 
