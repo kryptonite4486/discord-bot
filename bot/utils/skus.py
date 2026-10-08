@@ -63,8 +63,10 @@ def validate(manifest: dict[str, Any]) -> list[str]:
         sku_id = sku.get("id")
         if sku_id is not None and not str(sku_id).isdigit():
             problems.append(f"{where}: id must be a Discord snowflake")
-        if sku.get("name") != policy.name:
-            problems.append(f"{where}: name {sku.get('name')!r} should be the tier name {policy.name!r}")
+        # The store name may add a word ("Alliance Tier") but must lead with
+        # the tier name /premium shows, so the two read as the same plan.
+        if not str(sku.get("name", "")).startswith(policy.name):
+            problems.append(f"{where}: name {sku.get('name')!r} should start with the tier name {policy.name!r}")
         if not isinstance(sku.get("price_usd"), (int, float)) or sku["price_usd"] <= 0:
             problems.append(f"{where}: price_usd must be a positive number")
         problems += _check_text(where, "name", sku.get("name"), MAX_NAME)

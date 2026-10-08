@@ -68,13 +68,13 @@ These are gaps that must be closed before or alongside charging money. **P0** me
 
 ## 3. Tiers
 
-The unit of sale is **one Discord server**, which is usually one alliance. Alliance leaders (R5/R4) are the buyers, and they often pool money, so a monthly price that splits easily with an annual option (about two months free) suits this audience. Prices are in USD and should be validated with 3–5 alliance leaders before launch.
+The unit of sale is **one Discord server**, which is usually one alliance. Alliance leaders (R5/R4) are the buyers, and they often pool money, so a monthly price that splits easily suits this audience. Plans are monthly only: Discord subscriptions bill each month and have no annual option (annual plans were dropped 2026-10-08). Prices are in USD and should be validated with 3–5 alliance leaders before launch.
 
 *Repriced 2026-10-08 from $4.99/$9.99 a month ($49/$99 a year).* Comparable game bots charge about $5 a month for rosters and reminders (LW Alliance Helper, $4.99 through Discord) up to $10 a month (Whiteout Survival Helper); none we found reads screenshots, which is both our edge and our running cost. Command at $19.99 is about $0.20 per member for a 100-player alliance. Alliance stays under $10 so the first step from Free doesn't cost as much as a whole competing bot, and Command is about 2.5× Alliance so it reads as the obvious upgrade. Charge for what ships: Command features marked *(new)* below are listed as "coming" until they work. Raise prices later for new subscribers only; existing ones keep their price. Check Discord's Premium Apps revenue share before fixing the final numbers.
 
 | | **Free** | **Mid — "Alliance"** | **Full — "Command"** |
 |---|---|---|---|
-| Price | $0 | **$7.99/mo** or **$79/yr** | **$19.99/mo** or **$199/yr** |
+| Price | $0 | **$7.99/mo** | **$19.99/mo** |
 | OCR images / week | 25 (roughly one dataset for a small alliance) | 250 | 1,000 (fair use) |
 | OCR queue priority | Standard | Priority | Highest |
 | Tracked channels (datasets) | 1 | 3 | Unlimited |
@@ -103,13 +103,13 @@ Notes:
 - **Retention limits hide history, they don't delete it.** Upgrading reveals all history at once, which is a strong conversion moment.
 - **OCR queue priority is a weighted share, not a hard jump.** Free is Standard, Mid is Priority and Full is Highest. When a slot frees up, the queue first picks a level by smooth weighted round-robin (weights 1 : 2 : 4), then the server in that level whose last turn was longest ago. Servers still take turns one whole request at a time. While every level has work waiting, every 7 turns go 4 to Full, 2 to Mid and 1 to Free, spread out rather than bunched. Free never gets less than a 1-in-7 share (1-in-5 against Full alone), so paid load can slow Free servers but never starve them. We chose this over strict priority with an aging bound because its guarantee is counted in turns. An aging timer would have to be tuned against requests that range from one image to a 50-image zip, and when it fires, a backlog of aged Free requests would jump ahead of paid ones all at once. A level with nothing waiting builds up no credit. The level is looked up from the server's tier when a request is queued. With `TIERS_ENFORCED` off, every server is Standard and the queue behaves exactly as before. Users still only see how many of their own server's requests are ahead (priority never reorders one server's requests). `/ops queue` shows each waiting server's lane.
 - **OCR quota is the main cost lever.** Tune the numbers once the capacity benchmark (§2 item 14) is done. If one Mac can't handle 1,000 images per week per Full server at peak, cap Full at a lower number or add a cloud fallback before selling more.
-- Possible launch offer: "Founding Alliance" Full annual at $149 (instead of $199) for the first 20 servers, in exchange for feedback.
+- Possible launch offer: "Founding Alliance" for the first 20 servers, in exchange for feedback. A Discord subscription has one price for everyone, so this would be extra free Command time (a gift code) rather than a discount.
 
 ## 4. Payments
 
 **Recommended: Discord Premium Apps (server subscriptions) as the main channel**, with a provider-neutral entitlement table so gifts, trials and any future Stripe/Patreon customers all go through the same code.
 
-- Create two guild-subscription SKUs (Alliance, Command) in the Developer Portal. Annual pricing depends on what Discord supports for the SKU type; if it isn't available, offer annual through Stripe.
+- Two guild-subscription SKUs, "Alliance Tier" and "Command Tier", created in the Developer Portal 2026-10-08 (unpublished). Discord bills them monthly; there is no annual option. Discord's API can't create or edit SKUs, so `bot/utils/skus.json` records what the portal should hold and `scripts/sync_skus.py` checks it (README, "Discord SKUs").
 - Listen to `on_entitlement_create` / `on_entitlement_update` / `on_entitlement_delete`. On startup, reconcile with `fetch_entitlements` so missed events don't leave a server on the wrong tier.
 - Show the upgrade button with Discord's premium/SKU button component.
 - Requirements: a verified app, a team-owned application, ToS and Privacy URLs, and an eligible payout country. Check Discord's current revenue share and policies at signup.
@@ -212,7 +212,7 @@ Why not Discord test entitlements? They are meant for testing, and creating them
 
 ## 8. Open decisions
 
-1. Discord Premium Apps vs Stripe. This depends on eligibility, revenue share and whether annual plans are available.
+1. Discord Premium Apps vs Stripe. This depends on eligibility and revenue share.
 2. Whether to keep everything on the Mac Studio or move the bot process to a VPS before taking money.
 3. Final quota numbers after the capacity benchmark.
 4. Whether watermarked charts on Free are worth the goodwill cost, versus not offering charts on Free at all.

@@ -63,7 +63,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_names_and_tiers(self) -> None:
         m = _manifest()
-        m["skus"][0]["name"] = "Alliance Tier"
+        m["skus"][0]["name"] = "Premium Alliance"
         del m["skus"][1]
         problems = skus.validate(m)
         self.assertTrue(any("tier name" in p for p in problems))

@@ -5,7 +5,7 @@
     {
       "tier": "mid",
       "id": "1557765914487689317",
-      "name": "Alliance",
+      "name": "Alliance Tier",
       "price_usd": 7.99,
       "description": "For a growing alliance: 250 screenshots a week, 3 tracked channels, half a year of history and the full set of player reports.",
       "benefits": [
@@ -50,7 +50,7 @@
     {
       "tier": "full",
       "id": "1557766045975060620",
-      "name": "Command",
+      "name": "Command Tier",
       "price_usd": 19.99,
       "description": "For alliances that track everything: 1,000 screenshots a week, unlimited channels and history, server-wide reports and the top queue spot.",
       "benefits": [
