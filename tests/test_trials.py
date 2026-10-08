@@ -18,7 +18,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.cogs.ops import Ops, format_show  # noqa: E402
-from bot.cogs.premium import Premium, TrialView, format_premium, trial_note  # noqa: E402
+from bot.cogs.premium import (  # noqa: E402
+    Premium,
+    TrialView,
+    format_premium,
+    trial_note,
+    trial_refused_message,
+)
 from bot.db import Database  # noqa: E402
 from bot.utils.gift_reminders import STAGE_SERVER, GiftReminders  # noqa: E402
 from bot.utils.tiers import FREE, FULL, MID, TRIAL_DAYS, Tiers, TierStatus  # noqa: E402
@@ -28,6 +34,7 @@ NOW = datetime.now(timezone.utc).replace(microsecond=0)
 GUILD = "111"
 CHANNEL = "222"
 OPERATOR = 1
+OWNER = 77
 CONTROL = 100
 SUPPORT = "https://discord.gg/support"
 
@@ -45,7 +52,8 @@ class _Case(unittest.IsolatedAsyncioTestCase):
         self.bot = SimpleNamespace(
             db=self.db, tiers=self.tiers, guilds=[],
             settings=SimpleNamespace(
-                control_guild_id=CONTROL, bot_owner_ids={OPERATOR}, support_url=SUPPORT
+                control_guild_id=CONTROL, bot_owner_ids={OPERATOR}, support_url=SUPPORT,
+                auto_trial=True,
             ),
             get_guild=lambda gid: None,
         )
@@ -257,7 +265,7 @@ class PremiumTrialTests(_Case):
         followup = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())))
         response = SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), edit_message=AsyncMock())
         return SimpleNamespace(
-            guild_id=int(GUILD), user=SimpleNamespace(id=9),
+            guild_id=int(GUILD), user=SimpleNamespace(id=9), guild=SimpleNamespace(owner_id=OWNER),
             permissions=SimpleNamespace(manage_guild=manage),
             response=response, followup=followup,
         )
@@ -295,6 +303,112 @@ class PremiumTrialTests(_Case):
         await view.start.callback(inter)
         self.assertIn("Manage Server", inter.response.send_message.await_args.args[0])
         self.assertIsNone(await self.db.trial_claimed_at(GUILD))
+
+
+class OwnerLimitTests(_Case):
+    async def test_second_server_of_same_owner_is_refused(self) -> None:
+        outcome, _ = await self.db.start_trial(
+            GUILD, "9", tier="full", days=TRIAL_DAYS, now=NOW, owner_id="77"
+        )
+        self.assertEqual(outcome, "ok")
+        outcome, details = await self.db.start_trial(
+            "112", "9", tier="full", days=TRIAL_DAYS, now=NOW, owner_id="77"
+        )
+        self.assertEqual(outcome, "owner_claimed")
+        self.assertEqual(details["guild_id"], GUILD)
+        self.assertEqual(await self.db.entitlements_for("112"), [])
+        self.assertIn("owner has already used", trial_refused_message(outcome, details))
+
+    async def test_other_owner_and_unknown_owner_are_unaffected(self) -> None:
+        await self.db.start_trial(GUILD, "9", tier="full", days=TRIAL_DAYS, now=NOW, owner_id="77")
+        outcome, _ = await self.db.start_trial(
+            "112", "9", tier="full", days=TRIAL_DAYS, now=NOW, owner_id="78"
+        )
+        self.assertEqual(outcome, "ok")
+        outcome, _ = await self.start(guild="113")  # no owner: per-server rule only
+        self.assertEqual(outcome, "ok")
+
+    async def test_button_counts_the_owner(self) -> None:
+        await self.premium.start_trial(GUILD, 9, owner_id=OWNER)
+        text = await self.premium.start_trial("112", 9, owner_id=OWNER)
+        self.assertIn("owner has already used", text)
+
+    async def test_operators_are_exempt(self) -> None:
+        await self.premium.start_trial(GUILD, 9, owner_id=OPERATOR)
+        text = await self.premium.start_trial("112", 9, owner_id=OPERATOR)
+        self.assertIn("trial has started", text)
+
+    async def test_migration_adds_owner_column(self) -> None:
+        path = Path(self._tmp.name) / "old.db"
+        import aiosqlite
+        async with aiosqlite.connect(path) as conn:
+            await conn.execute("CREATE TABLE TrialClaim (GuildId TEXT PRIMARY KEY, ClaimedAt TEXT NOT NULL)")
+            await conn.execute("INSERT INTO TrialClaim VALUES ('5', '2026-01-01 00:00:00')")
+            await conn.commit()
+        db = Database(path)
+        await db.connect()
+        try:
+            self.assertIn("OwnerId", await db._table_columns("TrialClaim"))
+            self.assertEqual(await db.trial_claimed_at("5"), "2026-01-01 00:00:00")
+        finally:
+            await db.close()
+
+
+class AutoTrialTests(_Case):
+    def _guild(self, gid=int(GUILD), owner=OWNER, *, system_ok=True):
+        def perms(ok):
+            return SimpleNamespace(view_channel=ok, send_messages=ok)
+        system = SimpleNamespace(position=5, send=AsyncMock(),
+                                 permissions_for=lambda me, ok=system_ok: perms(ok))
+        general = SimpleNamespace(position=0, send=AsyncMock(), permissions_for=lambda me: perms(True))
+        return SimpleNamespace(id=gid, owner_id=owner, me=object(), system_channel=system,
+                               text_channels=[system, general])
+
+    async def test_join_starts_trial_and_welcomes(self) -> None:
+        self.tiers.enforced = True
+        guild = self._guild()
+        await self.premium.on_guild_join(guild)
+        self.assertIs((await self.tiers.status(GUILD)).policy, FULL)
+        [row] = await self.db.entitlements_for(GUILD)
+        self.assertIsNone(row["GrantedBy"])
+        text = guild.system_channel.send.await_args.args[0]
+        self.assertIn("Thanks for adding", text)
+        self.assertIn("goes back to **Free**", text)
+
+    async def test_falls_back_to_first_channel_it_can_post_in(self) -> None:
+        self.tiers.enforced = True
+        guild = self._guild(system_ok=False)
+        await self.premium.on_guild_join(guild)
+        guild.system_channel.send.assert_not_awaited()
+        guild.text_channels[1].send.assert_awaited_once()
+
+    async def test_rejoin_gets_nothing(self) -> None:
+        self.tiers.enforced = True
+        await self.premium.on_guild_join(self._guild())
+        guild = self._guild()
+        await self.premium.on_guild_join(guild)
+        guild.system_channel.send.assert_not_awaited()
+        self.assertEqual(len(await self.db.entitlements_for(GUILD)), 1)
+
+    async def test_owner_with_earlier_trial_gets_nothing(self) -> None:
+        self.tiers.enforced = True
+        await self.premium.on_guild_join(self._guild())
+        guild = self._guild(gid=112)
+        await self.premium.on_guild_join(guild)
+        guild.system_channel.send.assert_not_awaited()
+        self.assertIsNone(await self.db.trial_claimed_at("112"))
+
+    async def test_nothing_while_not_enforced_or_switched_off(self) -> None:
+        guild = self._guild()
+        await self.premium.on_guild_join(guild)  # enforced is False
+        self.tiers.enforced = True
+        self.bot.settings.auto_trial = False
+        await self.premium.on_guild_join(guild)
+        self.bot.settings.auto_trial = True
+        await self.premium.on_guild_join(self._guild(gid=CONTROL))
+        guild.system_channel.send.assert_not_awaited()
+        self.assertIsNone(await self.db.trial_claimed_at(GUILD))
+        self.assertIsNone(await self.db.trial_claimed_at(str(CONTROL)))
 
 
 class TrialReminderTests(_Case):

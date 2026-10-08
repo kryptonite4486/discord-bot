@@ -2,10 +2,13 @@
 with a button for server admins to start the free trial.
 /redeem: claim a gift code for this server.
 
-The free trial is 14 days of Command, once per server ever (TrialClaim in
-bot/db/database.py). It's a button on /premium rather than a command of its
-own: admins see it next to what the trial unlocks, it only appears while the
-server can start one, and /premium stays a single command.
+The free trial is 14 days of Command, once per server ever and once per
+server owner (TrialClaim in bot/db/database.py). While tiers are enforced it
+starts by itself when the bot joins a new server (AUTO_TRIAL), with a
+welcome message. Servers that joined before can start it with a button on
+/premium rather than a command of its own: admins see it next to what the
+trial unlocks, it only appears while the server can start one, and /premium
+stays a single command.
 """
 
 from __future__ import annotations
@@ -201,6 +204,12 @@ def trial_started_message(
 
 
 def trial_refused_message(outcome: str, details: dict) -> str:
+    if outcome == "owner_claimed":
+        return (
+            "This server's owner has already used a free trial on another server "
+            f"(started {details['claimed_at'][:10]}). Each person gets one. "
+            f"Run `/premium` to see the plans, or contact {CONTACT}."
+        )
     if outcome == "claimed":
         return (
             f"This server has already used its free trial (started "
@@ -215,6 +224,32 @@ def trial_refused_message(outcome: str, details: dict) -> str:
         f"This server already has **{status.describe()}**, so a trial would add nothing. "
         "The free trial stays available: you can start it from `/premium` if that plan ends."
     )
+
+
+def welcome_message(ends_at: str, after: TierStatus, *, support_url: str) -> str:
+    """Posted when the bot joins a new server and its free trial starts."""
+    return "\n".join([
+        f"👋 Thanks for adding LastZ Assistant! This server gets a free {TRIAL_DAYS}-day "
+        f"**{TRIAL_TIER.name}** trial, which has started and runs until **{ends_at[:10]}** "
+        f"({ends_at[11:16]} UTC). After that it goes back to **{after.describe()}**; "
+        "nothing is deleted when it ends.",
+        "Run `/help` to get started, `/setup` to pick a report channel (it gets a reminder "
+        "3 days before the trial ends), and `/premium` to see the plans.",
+        f"Questions? {support_url}",
+    ])
+
+
+def welcome_channel(guild: discord.Guild) -> discord.abc.Messageable | None:
+    """Where to post the welcome: the server's system channel, else the
+    first text channel the bot can see and send in."""
+    me = guild.me
+    channels = [guild.system_channel] if guild.system_channel else []
+    channels += sorted(guild.text_channels, key=lambda c: c.position)
+    for channel in channels:
+        perms = channel.permissions_for(me)
+        if perms.view_channel and perms.send_messages:
+            return channel
+    return None
 
 
 class TrialView(discord.ui.View):
@@ -238,7 +273,10 @@ class TrialView(discord.ui.View):
             return
         self.stop()
         await interaction.response.edit_message(view=None)
-        text = await self.cog.start_trial(guild_id_from_interaction(interaction), interaction.user.id)
+        owner_id = getattr(interaction.guild, "owner_id", None)
+        text = await self.cog.start_trial(
+            guild_id_from_interaction(interaction), interaction.user.id, owner_id=owner_id
+        )
         await interaction.followup.send(text, ephemeral=True)
 
     async def on_timeout(self) -> None:
@@ -281,27 +319,73 @@ class Premium(commands.Cog):
         else:
             await interaction.followup.send(text, ephemeral=True)
 
-    async def start_trial(self, guild_id: str, user_id: int) -> str:
-        """Start this server's free trial if it can have one; return the reply text."""
+    def _trial_owner(self, owner_id: int | None) -> str | None:
+        """The owner a trial counts against; None (no per-owner limit) for
+        operators, who add the bot to test servers, or an unknown owner."""
+        if owner_id is None or owner_id in self.bot.settings.bot_owner_ids:
+            return None
+        return str(owner_id)
+
+    async def _start(
+        self, guild_id: str, user_id: int | None, owner_id: int | None
+    ) -> tuple[str, dict, TierStatus | None]:
+        """Start the trial; on success also return the plan after it ends."""
         now = datetime.now(timezone.utc)
         outcome, details = await self.bot.db.start_trial(
-            guild_id, str(user_id), tier=TRIAL_TIER.key, days=TRIAL_DAYS, now=now
+            guild_id, None if user_id is None else str(user_id),
+            tier=TRIAL_TIER.key, days=TRIAL_DAYS, now=now, owner_id=self._trial_owner(owner_id),
         )
         if outcome != "ok":
-            log.info("Trial refused (%s) for guild %s by user %s", outcome, guild_id, user_id)
-            return trial_refused_message(outcome, details)
+            log.info("Trial refused (%s) for guild %s by %s", outcome, guild_id,
+                     f"user {user_id}" if user_id else "auto-trial on join")
+            return outcome, details, None
         self.bot.tiers.invalidate(guild_id)
         active = await self.bot.db.active_entitlements(guild_id, now.strftime("%Y-%m-%d %H:%M:%S"))
         after = status_from_entitlements(
             [r for r in active if r["Id"] != details["entitlement_id"]
              and (r["EndsAt"] is None or r["EndsAt"] > details["ends_at"])]
         )
-        log.warning("Guild %s started its free trial (entitlement #%d) by user %s, until %s",
-                    guild_id, details["entitlement_id"], user_id, details["ends_at"])
+        log.warning("Guild %s started its free trial (entitlement #%d) by %s, until %s",
+                    guild_id, details["entitlement_id"],
+                    f"user {user_id}" if user_id else "auto-trial on join", details["ends_at"])
+        return outcome, details, after
+
+    async def start_trial(self, guild_id: str, user_id: int, *, owner_id: int | None = None) -> str:
+        """Start this server's free trial if it can have one; return the reply text."""
+        outcome, details, after = await self._start(guild_id, user_id, owner_id)
+        if after is None:
+            return trial_refused_message(outcome, details)
         return trial_started_message(
             details["ends_at"], after, enforced=self.bot.tiers.enforced,
             report_channel=await self.bot.db.report_channel_id(guild_id) is not None,
         )
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Start a new server's free trial and say hello (AUTO_TRIAL).
+
+        Only while tiers are enforced: before that a trial changes nothing
+        and would run out unused. A server that has had the bot before, or
+        whose owner already had a trial elsewhere, gets nothing and no post.
+        """
+        settings = self.bot.settings
+        if not settings.auto_trial or not self.bot.tiers.enforced:
+            return
+        if guild.id == settings.control_guild_id:
+            return
+        outcome, details, after = await self._start(str(guild.id), None, guild.owner_id)
+        if after is None:
+            return
+        channel = welcome_channel(guild)
+        if channel is None:
+            log.info("Guild %s: no channel to post the welcome in", guild.id)
+            return
+        try:
+            await channel.send(welcome_message(
+                details["ends_at"], after, support_url=settings.support_url
+            ))
+        except discord.HTTPException:
+            log.exception("Guild %s: welcome message failed", guild.id)
 
     @app_commands.command(name="redeem", description="Redeem a gift code for this server (Manage Server)")
     @app_commands.describe(code="The gift code, e.g. ABCD-EFGH-JKMN-PQRS")

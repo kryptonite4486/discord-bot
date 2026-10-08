@@ -17,7 +17,7 @@
   </header>
   <main>
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated 6 October 2026</p>
+    <p class="updated">Last updated 8 October 2026</p>
 
     <p>This policy explains what the LastZ Assistant Discord bot (“the bot”) stores, why, for how long, and how to get it deleted. LastZ Assistant (“we”, “us”) runs the bot. Contact us at <a href="mailto:lastzassistant@gmail.com">lastzassistant@gmail.com</a>.</p>
 
@@ -46,9 +46,9 @@
           <td>Capacity planning, fair queuing and usage limits. No player data.</td>
         </tr>
         <tr>
-          <td><strong>Subscription records</strong>: which server, which plan (paid once subscriptions are offered, gifted, or a free trial), start and end dates, and the Discord user ID of whoever redeemed a gift code or started a trial</td>
-          <td>Discord, or us for gifted plans; the bot when a server admin starts a free trial or redeems a code</td>
-          <td>To provide paid features, and to keep the free trial to one per server. We never see payment details: Discord handles payments.</td>
+          <td><strong>Subscription records</strong>: which server, which plan (paid once subscriptions are offered, gifted, or a free trial), start and end dates, the Discord user ID of whoever redeemed a gift code or started a trial, and the Discord user ID of the server's owner when its free trial started</td>
+          <td>Discord, or us for gifted plans; the bot when it's added to a server, or when a server admin starts a free trial or redeems a code</td>
+          <td>To provide paid features, and to keep the free trial to one per server and one per server owner. We never see payment details: Discord handles payments.</td>
         </tr>
         <tr>
           <td><strong>Free-plan screenshot use</strong>: for servers on the Free plan, the Discord user ID of the server's owner and of each person who sends screenshots for reading, with the server ID and the first and latest dates they did</td>
@@ -65,7 +65,7 @@
 
     <p><strong>Screenshots aren't kept.</strong> Images and zip files you upload are downloaded, read by a vision model running on our own hardware (not a third-party AI service), and discarded once the stats are extracted. They aren't used to train any model.</p>
 
-    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details, apart from the trivia scores of people who choose to play trivia and the user IDs described under “Free-plan screenshot use”. To keep screenshot reading quick for everyone, the bot also counts how many screenshots each person sends in each server over the last few minutes; those counts are kept only in memory and are gone within minutes, or when the bot restarts. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
+    <p><strong>The bot can't read your messages.</strong> It doesn't have Discord's Message Content permission, so Discord only shows it the text and attachments of messages that @mention it. It works through slash commands, and it doesn't store message text, member lists or Discord account details, apart from the trivia scores of people who choose to play trivia, the server owner's user ID in the free trial record, and the user IDs described under “Free-plan screenshot use”. To keep screenshot reading quick for everyone, the bot also counts how many screenshots each person sends in each server over the last few minutes; those counts are kept only in memory and are gone within minutes, or when the bot restarts. While someone runs <code>/ingest batch</code>, the bot uses only that person's messages that @mention it in that channel, to collect their screenshots, until they send <code>done</code>.</p>
 
     <h2>About player names</h2>
     <p>Player names come from the game and are uploaded by alliance members, usually the alliance's leaders. That means the bot can hold names of players who have never used it. If your in-game name is stored and you want it removed, ask the server's admins, who can delete it with <code>/data delete</code>, or contact us with the server and name, and we'll remove it.</p>
@@ -85,7 +85,7 @@
         <tr><td>Backups</td><td>Kept for at most <strong>30 days</strong>, so deleted data is gone from backups within 30 days of being deleted.</td></tr>
         <tr><td>Usage counts</td><td>Kept, because they contain no player data.</td></tr>
         <tr><td>Subscription records</td><td>Kept, including after <code>/data delete</code> or the bot's removal, as a record of what each server was entitled to. They contain no player data.</td></tr>
-        <tr><td>Free trial record</td><td>The server's ID and the date its free trial started are kept even after <code>/data delete</code> or the bot's removal, so each server gets only one trial.</td></tr>
+        <tr><td>Free trial record</td><td>The server's ID, the date its free trial started and the Discord user ID of its owner at the time are kept even after <code>/data delete</code> or the bot's removal, so each server, and each server owner, gets only one trial.</td></tr>
         <tr><td>Free-plan screenshot use</td><td>Deleted <strong>30 days</strong> after the person last sent screenshots in that server, and straight away with the server's data (<code>/data delete</code> for the whole server, or the deletion after the bot is removed).</td></tr>
         <tr><td>Operational logs</td><td>Kept in size-limited files that are overwritten as new entries are written.</td></tr>
       </table>

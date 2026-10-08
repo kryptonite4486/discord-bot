@@ -114,13 +114,16 @@ CREATE TABLE IF NOT EXISTS GiftCodeRedemption (
     PRIMARY KEY (CodeId, GuildId)
 );
 
--- Servers that have started their free trial (/premium), one row each.
--- This is what keeps the trial to once per server. It's deliberately not
--- removed by /data delete or the purge after the bot is removed, and holds
--- only the server ID and when the trial started. /ops trial-reset deletes it.
+-- Servers that have started their free trial (on join or from /premium),
+-- one row each. This is what keeps the trial to once per server, and
+-- OwnerId (the server owner's Discord user ID when the trial started) to
+-- once per owner. It's deliberately not removed by /data delete or the
+-- purge after the bot is removed, and holds only these three values.
+-- /ops trial-reset deletes it.
 CREATE TABLE IF NOT EXISTS TrialClaim (
     GuildId   TEXT PRIMARY KEY,
-    ClaimedAt TEXT NOT NULL
+    ClaimedAt TEXT NOT NULL,
+    OwnerId   TEXT
 );
 
 -- Abuse control (bot/utils/abuse.py): which people use OCR in which Free
@@ -237,6 +240,7 @@ class Database:
         await self._conn.executescript(SCHEMA_SQL)
         await self._migrate_guild_settings_columns()
         await self._migrate_trivia_announce_channel()
+        await self._migrate_trial_claim_owner()
         await self._conn.commit()
         log.info("Database ready at %s", self.path)
 
@@ -359,6 +363,15 @@ class Database:
             if name not in cols:
                 await self.conn.execute(f"ALTER TABLE GuildSettings ADD COLUMN {name} TEXT")
                 log.info("Migrating GuildSettings: added %s", name)
+
+    async def _migrate_trial_claim_owner(self) -> None:
+        """Add TrialClaim.OwnerId (trials became once per owner too)."""
+        if "OwnerId" not in await self._table_columns("TrialClaim"):
+            await self.conn.execute("ALTER TABLE TrialClaim ADD COLUMN OwnerId TEXT")
+            log.info("Migrating TrialClaim: added OwnerId")
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trial_claim_owner ON TrialClaim (OwnerId)"
+        )
 
     async def _migrate_trivia_announce_channel(self) -> None:
         """Move TriviaSettings.AnnounceChannelId into GuildSettings.TriviaChannelId.
@@ -1581,14 +1594,27 @@ class Database:
         return row["ClaimedAt"] if row else None
 
     async def start_trial(
-        self, guild_id: str, user_id: str, *, tier: str, days: int, now: datetime
+        self,
+        guild_id: str,
+        user_id: str | None,
+        *,
+        tier: str,
+        days: int,
+        now: datetime,
+        owner_id: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Start a server's one free trial: a Source='trial' entitlement.
 
+        ``user_id`` is who started it (None: the bot, on joining the server).
+        With ``owner_id``, the trial is also once per server owner: refused
+        if any server this person owned when its trial started has had one.
+
         Returns (outcome, details). Outcome is 'ok' (details: entitlement_id,
         ends_at), 'claimed' (the server already had its trial; details:
-        claimed_at) or 'covered' (an active entitlement already gives
-        ``tier``; details: the entitlement row, and the trial stays unused).
+        claimed_at), 'owner_claimed' (the owner already had a trial on
+        another server; details: guild_id, claimed_at) or 'covered' (an
+        active entitlement already gives ``tier``; details: the entitlement
+        row, and the trial stays unused).
 
         Race-safe like redeem_gift_code: the write lock serializes starts in
         this process, and TrialClaim's key stops a second claim from another
@@ -1602,6 +1628,17 @@ class Database:
                 claim = await cursor.fetchone()
             if claim is not None:
                 return "claimed", {"claimed_at": claim["ClaimedAt"]}
+            if owner_id is not None:
+                async with self.conn.execute(
+                    "SELECT GuildId, ClaimedAt FROM TrialClaim WHERE OwnerId = ? "
+                    "ORDER BY ClaimedAt LIMIT 1",
+                    (owner_id,),
+                ) as cursor:
+                    earlier = await cursor.fetchone()
+                if earlier is not None:
+                    return "owner_claimed", {
+                        "guild_id": earlier["GuildId"], "claimed_at": earlier["ClaimedAt"]
+                    }
             async with self.conn.execute(
                 f"SELECT * FROM GuildEntitlement WHERE GuildId = :guild AND Tier = :tier "
                 f"AND {self._ACTIVE_SQL} ORDER BY EndsAt IS NULL DESC, EndsAt DESC LIMIT 1",
@@ -1613,8 +1650,8 @@ class Database:
             ends_at = (now + timedelta(days=days)).strftime(_TS)
             try:
                 await self.conn.execute(
-                    "INSERT INTO TrialClaim (GuildId, ClaimedAt) VALUES (?, ?)",
-                    (guild_id, now_s),
+                    "INSERT INTO TrialClaim (GuildId, ClaimedAt, OwnerId) VALUES (?, ?, ?)",
+                    (guild_id, now_s, owner_id),
                 )
                 cursor = await self.conn.execute(
                     """
@@ -1622,7 +1659,8 @@ class Database:
                         (GuildId, Tier, Source, StartsAt, EndsAt, GrantedBy, Reason)
                     VALUES (?, ?, 'trial', ?, ?, ?, ?)
                     """,
-                    (guild_id, tier, now_s, ends_at, user_id, f"{days}-day free trial"),
+                    (guild_id, tier, now_s, ends_at, user_id,
+                     f"{days}-day free trial" + ("" if user_id else " (on joining)")),
                 )
                 entitlement_id = int(cursor.lastrowid)
                 await self._audit(

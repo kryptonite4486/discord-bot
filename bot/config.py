@@ -109,6 +109,9 @@ class Settings:
     ingest_rate_admin_multiplier: int = 3
     # Free servers one person (owner or OCR user) can use OCR in. 0: no cap.
     free_servers_per_owner: int = 3
+    # Start the free trial when the bot joins a new server (only while
+    # tiers_enforced; bot/cogs/premium.py).
+    auto_trial: bool = True
     # None: the question bank bundled with the bot.
     trivia_questions_path: Path | None = None
     # Dead-man's-switch URL (healthchecks.io, Better Stack) pinged while healthy.
@@ -170,6 +173,7 @@ class Settings:
             ingest_rate_images=_int_or("INGEST_RATE_IMAGES", 60),
             ingest_rate_admin_multiplier=max(1, _optional_int("INGEST_RATE_ADMIN_MULTIPLIER") or 3),
             free_servers_per_owner=_int_or("FREE_SERVERS_PER_OWNER", 3),
+            auto_trial=_env_bool("AUTO_TRIAL", True),
             trivia_questions_path=(
                 Path(os.environ["TRIVIA_QUESTIONS_PATH"])
                 if os.getenv("TRIVIA_QUESTIONS_PATH", "").strip()
