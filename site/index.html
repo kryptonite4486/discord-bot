@@ -4,42 +4,203 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LastZ Assistant</title>
-  <meta name="description" content="LastZ Assistant: a Discord bot that tracks Last Z alliance stats.">
+  <meta name="description" content="LastZ Assistant: a Discord bot that reads your Last Z screenshots and turns them into weekly leaderboards, trends and growth reports for your alliance.">
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="wide">
   <header>
     <a class="brand" href="/">LastZ Assistant</a>
     <nav>
-      <a href="/privacy">Privacy</a>
-      <a href="/terms">Terms</a>
+      <a href="#features">Features</a>
+      <a href="#plans">Plans</a>
+      <a href="#setup">Setup</a>
+      <a href="#support">Support</a>
     </nav>
   </header>
-  <main>
-    <h1>LastZ Assistant</h1>
-    <p>A Discord bot for Last Z alliances. It reads leaderboard and member screenshots, keeps weekly stats for each player (Versus Points, Tech Contribution, HQ level, Power, Arena Power and Kills), and turns them into leaderboards, trends and growth reports for your server.</p>
-    <p>It also links to the <a href="https://lastz-territory-planner.pages.dev">territory planner</a>.</p>
+  <main class="landing">
+    <section class="hero">
+      <h1>Your alliance's stats, from screenshots to leaderboards</h1>
+      <p class="lead">LastZ Assistant is a Discord bot for Last Z alliances. Upload the in-game leaderboard and member screenshots you already take, and it keeps each player's weekly numbers and turns them into leaderboards, trends and growth reports for your server.</p>
+      <div class="cta">
+        <button class="button" type="button" disabled aria-describedby="install-note">Add to Discord</button>
+        <a class="button secondary" href="https://discord.gg/MM4KnfggUq">Join the support server</a>
+      </div>
+      <p id="install-note" class="muted small">Opening to new servers soon. Ask in the support server to be told when it does.</p>
+    </section>
 
-    <h2>Policies</h2>
-    <ul>
-      <li><a href="/privacy">Privacy Policy</a>: what the bot stores, for how long, and how to delete it.</li>
-      <li><a href="/terms">Terms of Service</a>: the rules for using the bot.</li>
-    </ul>
+    <section id="features">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li><strong>Upload screenshots.</strong> Run <code>/ingest image</code> in your alliance's channel, pick what the screenshots show (Versus Points, Tech Contribution, Power, Kills…) and attach them.</li>
+        <li><strong>The bot reads them.</strong> It reads each player's name and number from the image and saves them for that week. Numbers that look wrong, such as a player's Power dropping sharply, are flagged for you to check.</li>
+        <li><strong>Ask for a report.</strong> <code>/report</code> gives a weekly summary, leaderboards, a player's history, trends across weeks and who grew the most, as text or charts.</li>
+      </ol>
 
-    <h2>Credits</h2>
-    <p>Many trivia questions come from <a href="https://opentdb.com">Open Trivia DB</a>, used and edited under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>; see the <a href="/terms">Terms</a>.</p>
+      <h3>What it tracks</h3>
+      <p>Versus Points, Tech Contribution, HQ level, Power, Arena Power and Kills, every week, for every player. Missed a screenshot? Add a single number with <code>/add</code> or paste a list with <code>/ingest text</code>.</p>
 
-    <h2>Support</h2>
-    <p>Join our Discord support server:</p>
-    <ul>
-      <li><a href="https://discord.gg/MM4KnfggUq">#help</a>: questions about using the bot.</li>
-      <li><a href="https://discord.gg/RwXB2QSdPy">#bug-reports</a>: something isn't working.</li>
-      <li><a href="https://discord.gg/KezmFghch8">#announcements</a>: updates and changes.</li>
-    </ul>
-    <p>Or email <a href="mailto:lastzassistant@gmail.com">lastzassistant@gmail.com</a>.</p>
+      <h2>See it in action</h2>
+      <p class="muted small">Examples made with invented players. Charts are the bot's real output.</p>
+
+      <figure class="shot">
+        <div class="discord" role="img" aria-label="Example /report leaderboard reply in Discord">
+          <div class="d-cmd">used <code>/report leaderboard metric:Versus Points</code></div>
+          <div class="d-author">LastZ Assistant <span class="d-tag">APP</span></div>
+          <div class="d-title">Leaderboard — VersusPoints (2026-09-14)</div>
+          <table class="d-table">
+            <thead><tr><th>#</th><th>Player</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>RustQueen</td><td>79.7M</td></tr>
+              <tr><td>2</td><td>IronVex</td><td>72.3M</td></tr>
+              <tr><td>3</td><td>SableFox</td><td>60.1M</td></tr>
+              <tr><td>4</td><td>NoxWarden</td><td>55.1M</td></tr>
+              <tr><td>5</td><td>GrimLatch</td><td>49.9M</td></tr>
+              <tr><td>6</td><td>Kestrel</td><td>48.1M</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figcaption>Weekly leaderboards for any tracked number.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <img src="/img/trend.png" width="1381" height="690" loading="lazy" alt="Line chart of Versus Points for six players over eight weeks, most rising steadily.">
+        <figcaption>Trends across weeks show who is pulling their weight in Versus.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <img src="/img/growth.png" width="1240" height="604" loading="lazy" alt="Bar chart of Power growth by player, from 41% at the top to minus 4.5% at the bottom.">
+        <figcaption>Growth reports show who is building, and who has stalled.</figcaption>
+      </figure>
+
+      <h3>Trivia for your members</h3>
+      <p>Between events, run a trivia match in your server, or open it to every server running the bot and compete against other alliances. Questions range from Last Z itself to general knowledge, with a leaderboard for each server and across servers.</p>
+      <figure class="shot">
+        <div class="discord" role="img" aria-label="Example trivia question in Discord with four answer buttons">
+          <div class="d-author">LastZ Assistant <span class="d-tag">APP</span></div>
+          <div class="d-embed">
+            <div class="d-title">Question 3/10</div>
+            <p><strong>Which faction's heroes lead Shooters?</strong></p>
+            <p><code>A</code> Blood Rose<br><code>B</code> Wings of Dawn<br><code>C</code> Guard of Order</p>
+            <p class="d-muted">Closes in 15 seconds</p>
+          </div>
+          <div class="d-buttons"><span>Blood Rose</span><span>Wings of Dawn</span><span>Guard of Order</span></div>
+        </div>
+        <figcaption>Members answer with a button; faster correct answers score more.</figcaption>
+      </figure>
+
+      <h3>Also included</h3>
+      <ul>
+        <li>A link to the <a href="https://lastz-territory-planner.pages.dev">territory planner</a> with <code>/planner</code>.</li>
+        <li>Separate datasets per channel, so one server can track several groups.</li>
+        <li>Tools to merge a player stored under two spellings, and to export your data as CSV or JSON.</li>
+        <li>Data deletion whenever you want it, and automatic deletion 30 days after the bot is removed. See the <a href="/privacy">Privacy Policy</a>.</li>
+      </ul>
+    </section>
+
+    <section id="plans">
+      <h2>Plans <span class="badge">Coming soon</span></h2>
+      <p>Paid plans aren't on sale yet. The prices below are planned launch prices and may change. Each plan covers one Discord server, and every server will be able to try Command free for 14 days.</p>
+
+      <div class="plans">
+        <article class="plan">
+          <h3>Free</h3>
+          <p class="price">$0</p>
+          <ul>
+            <li>25 screenshots a week</li>
+            <li>1 tracked channel</li>
+            <li>4 weeks of history in reports</li>
+            <li>Weekly summary and leaderboards</li>
+            <li>Charts (with a small credit)</li>
+            <li>Manual entry and mix-up flags</li>
+            <li>Last Z trivia</li>
+          </ul>
+        </article>
+        <article class="plan">
+          <h3>Alliance</h3>
+          <p class="price">$7.99<span>/month</span></p>
+          <p class="annual">or $79/year</p>
+          <ul>
+            <li>250 screenshots a week</li>
+            <li>3 tracked channels</li>
+            <li>26 weeks of history</li>
+            <li>Zip and bulk uploads</li>
+            <li>Player history, trend and growth reports</li>
+            <li>Charts without the credit</li>
+            <li>Duplicate-name tools and CSV/JSON export</li>
+            <li>Priority in the screenshot queue</li>
+            <li>A larger trivia bank</li>
+          </ul>
+        </article>
+        <article class="plan featured">
+          <h3>Command</h3>
+          <p class="price">$19.99<span>/month</span></p>
+          <p class="annual">or $199/year</p>
+          <ul>
+            <li>1,000 screenshots a week (fair use)</li>
+            <li>Unlimited tracked channels</li>
+            <li>All history</li>
+            <li>Everything in Alliance</li>
+            <li>Server-wide reports across channels</li>
+            <li>Highest priority in the screenshot queue</li>
+            <li>5,000+ trivia questions</li>
+            <li>Cross-server trivia</li>
+          </ul>
+          <p class="coming-label">Coming to Command</p>
+          <ul class="coming">
+            <li>Scheduled weekly report posts</li>
+            <li>Role-based command access</li>
+            <li>Linking your alliance across servers</li>
+          </ul>
+        </article>
+      </div>
+      <p class="muted small">Changing plans never deletes data: history outside a plan's window is hidden, and comes back when you upgrade.</p>
+    </section>
+
+    <section id="setup">
+      <h2>Setup</h2>
+      <ol class="steps">
+        <li><strong>Add the bot</strong> to your server with the Add to Discord button (available soon). It asks only for Send Messages, Embed Links, Attach Files and Read Message History, and it can't read your server's ordinary messages.</li>
+        <li><strong>Choose your channels</strong> with <code>/setup</code> (Manage Server): a trivia channel to keep matches out of your stats channels, and a report channel for the bot's notices.</li>
+        <li><strong>Upload your first screenshots</strong> with <code>/ingest image</code> in the channel that will hold your alliance's stats.</li>
+        <li><strong>Run a report</strong>, such as <code>/report week</code> or <code>/report leaderboard</code>. <code>/help</code> lists every command.</li>
+      </ol>
+    </section>
+
+    <section id="faq">
+      <h2>Questions</h2>
+      <details>
+        <summary>Can the bot read my server's messages?</summary>
+        <p>No. It uses no privileged intents, so it only sees slash commands, the screenshots you attach to them, and messages that @mention it during a <code>/ingest batch</code>.</p>
+      </details>
+      <details>
+        <summary>Who can see our alliance's data?</summary>
+        <p>Only your server. Data is kept per server and per channel, and reports never mix servers. Cross-server trivia shows other players only your server's name, your members' display names and their trivia scores.</p>
+      </details>
+      <details>
+        <summary>What if a screenshot is read wrong?</summary>
+        <p>The bot flags numbers that look implausible for that player, and you can correct any value with <code>/add</code>.</p>
+      </details>
+      <details>
+        <summary>Is this made by the Last Z developers?</summary>
+        <p>No. It's an independent fan project, not affiliated with or endorsed by the makers of Last Z or by Discord.</p>
+      </details>
+    </section>
+
+    <section id="support">
+      <h2>Support</h2>
+      <p>Join our Discord support server:</p>
+      <ul>
+        <li><a href="https://discord.gg/MM4KnfggUq">#help</a>: questions about using the bot.</li>
+        <li><a href="https://discord.gg/RwXB2QSdPy">#bug-reports</a>: something isn't working.</li>
+        <li><a href="https://discord.gg/KezmFghch8">#announcements</a>: updates and changes.</li>
+      </ul>
+      <p>Or email <a href="mailto:lastzassistant@gmail.com">lastzassistant@gmail.com</a>.</p>
+    </section>
   </main>
   <footer>
-    LastZ Assistant is an independent fan project. It isn't affiliated with or endorsed by the makers of Last Z or by Discord.
+    <p class="footer-links"><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></p>
+    <p>Many trivia questions come from <a href="https://opentdb.com">Open Trivia DB</a>, used and edited under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>; see the <a href="/terms">Terms</a>.</p>
+    <p>LastZ Assistant is an independent fan project. It isn't affiliated with or endorsed by the makers of Last Z or by Discord.</p>
   </footer>
 </body>
 </html>

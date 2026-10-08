@@ -35,3 +35,6 @@ tests/**/__pycache__/
 .EasyOCR/
 *.traineddata
 .venv/
+
+# Landing-page images (sample data only)
+!site/img/*.png
