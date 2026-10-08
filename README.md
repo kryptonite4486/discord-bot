@@ -358,6 +358,21 @@ If the table has `GuildId` but no `ChannelId`, startup adds `ChannelId` default 
 
 Fresh databases skip migration and create the new schema directly.
 
+## Custom emojis
+
+`assets/emojis/` holds the bot's own emoji art (128x128 PNGs, listed with previews in its `README.md`), all drawn by `scripts/make_emojis.py`. They're uploaded to the bot's application, not to any server, so the bot can use them everywhere. At startup it fetches them by name (`bot/utils/emojis.py`). Reports put a short headline above their code block, with metric icons, a 1-2-3 podium and growth arrows. Custom emojis don't render inside code blocks, so the tables stay plain. If an emoji is missing, the headline drops it or uses a standard emoji instead.
+
+To add or redraw emojis, edit the generator, rerun it, then upload:
+
+```bash
+.venv/bin/python scripts/make_emojis.py
+.venv/bin/python scripts/upload_emojis.py --dry-run
+.venv/bin/python scripts/upload_emojis.py              # new names only
+.venv/bin/python scripts/upload_emojis.py --replace kills,zombie   # redrawn ones
+```
+
+The upload uses `DISCORD_TOKEN` from `.env` (`--env-file .env.testing` for the testing bot). Restart the bot afterwards to pick up new IDs.
+
 ## Policy site
 
 `site/` holds the public website: a home page, the Privacy Policy (`privacy.html`) and the Terms of Service (`terms.html`). It's plain static HTML with no build step, published as the Cloudflare Pages project **`lastz-assistant`** (`https://lastz-assistant.pages.dev`). Pages serves `privacy.html` at `/privacy`; use those URLs in the Discord Developer Portal (General Information → Privacy Policy URL and Terms of Service URL).

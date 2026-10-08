@@ -12,7 +12,7 @@ from discord.ext import commands
 from bot import __version__
 from bot.config import Settings
 from bot.db import Database
-from bot.utils import setup_logging
+from bot.utils import emojis, setup_logging
 from bot.utils.channel_rules import enforce_channel_rules
 from bot.utils.command_sync import sync_commands
 from bot.utils.guild import reject_dm_interaction
@@ -109,6 +109,10 @@ class LastZAssistant(commands.Bot):
                 "before Phase 2 if this is unexpected.",
                 unassigned,
             )
+        try:
+            log.info("Custom emojis: %d available", await emojis.load(self))
+        except discord.HTTPException:
+            log.exception("Couldn't fetch custom emojis; messages will go without")
         for ext in COGS:
             await self.load_extension(ext)
             log.info("Loaded extension %s", ext)

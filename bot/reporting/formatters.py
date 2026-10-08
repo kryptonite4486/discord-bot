@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Iterable
 
+import discord
+
+from bot.utils import emojis
 from bot.utils import parsing as parsing_utils
 
 
@@ -370,3 +373,130 @@ def trend_summary_text(
         )
         parts.append(f"{label}: {spark}")
     return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------
+# Headlines: a few plain-text lines sent above a report's code block. Custom
+# emojis only render outside code blocks, so this is where the art goes.
+# Player names are escaped; send with mentions disabled.
+# --------------------------------------------------------------------------
+
+METRIC_LABELS = {
+    "VersusPoints": "Versus Points",
+    "TechContribution": "Tech Contribution",
+    "HQLevel": "HQ Level",
+    "Power": "Power",
+    "ArenaPower": "Arena Power",
+    "Kills": "Kills",
+}
+
+
+def _label(metric: str) -> str:
+    return METRIC_LABELS.get(metric, metric)
+
+
+def _player(name: str) -> str:
+    return "**" + discord.utils.escape_markdown(" ".join(str(name).split())) + "**"
+
+
+def _trend_icon(delta: float) -> str:
+    if delta > 0:
+        return emojis.icon("growth_up", "▲")
+    if delta < 0:
+        return emojis.icon("growth_down", "▼")
+    return ""
+
+
+def _podium(metric: str, rows: list[dict[str, Any]]) -> str:
+    return " · ".join(
+        f"{emojis.place_icon(i)} {_player(r['PlayerName'])} "
+        f"{parsing_utils.format_value(metric, r['Value'])}"
+        for i, r in enumerate(rows[:3], start=1)
+    )
+
+
+def leaderboard_headline(metric: str, week: str, rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    title = emojis.with_icon(
+        emojis.metric_icon(metric), f"**{_label(metric)} leaderboard** · week of {week}"
+    )
+    return f"{title}\n{_podium(metric, rows)}"
+
+
+def week_summary_headline(week: str, rows: list[dict[str, Any]]) -> str:
+    """One line per metric: its leader and how many players reported."""
+    if not rows:
+        return ""
+    by_metric: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_metric[row["MetricType"]].append(row)
+    lines = [emojis.with_icon(emojis.icon("report"), f"**Weekly summary** · week of {week}")]
+    for metric, items in sorted(by_metric.items()):
+        top = max(items, key=lambda r: r["Value"])
+        lines.append(emojis.with_icon(
+            emojis.metric_icon(metric),
+            f"{_label(metric)}: {emojis.place_icon(1)} {_player(top['PlayerName'])} "
+            f"{parsing_utils.format_value(metric, top['Value'])} · {len(items)} players",
+        ))
+    return "\n".join(lines)
+
+
+def player_headline(player: str, rows: list[dict[str, Any]]) -> str:
+    """Latest value per metric, with its change over the weeks shown."""
+    if not rows:
+        return ""
+    by_metric: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_metric[row["MetricType"]].append(row)
+    lines = [emojis.with_icon(emojis.icon("report"), f"**Player report** · {_player(player)}")]
+    for metric, items in sorted(by_metric.items()):
+        shown = sorted(items, key=lambda r: r["WeekStart"])[-12:]
+        latest = shown[-1]
+        line = f"{_label(metric)}: **{parsing_utils.format_value(metric, latest['Value'])}**"
+        if latest.get("Rank") is not None and latest.get("Population"):
+            line += f" (#{int(latest['Rank'])} of {int(latest['Population'])})"
+        if len(shown) >= 2 and metric not in {"TechContribution", "VersusPoints"}:
+            # Weekly metrics reset, so only cumulative ones get a change.
+            delta = latest["Value"] - shown[0]["Value"]
+            if delta:
+                sign = "+" if delta > 0 else ""
+                line += (
+                    f" {_trend_icon(delta)} {sign}{parsing_utils.format_value(metric, delta)}"
+                    f" since {shown[0]['WeekStart']}"
+                )
+        lines.append(emojis.with_icon(emojis.metric_icon(metric), line))
+    return "\n".join(lines)
+
+
+def growth_headline(metric: str, weeks: int, rows: list[dict[str, Any]]) -> str:
+    """The biggest climber and the biggest drop, if any."""
+    ranked = [r for r in rows if r.get("GrowthPct") is not None]
+    if not ranked:
+        return ""
+    lines = [emojis.with_icon(
+        emojis.metric_icon(metric), f"**{_label(metric)} growth** · last {weeks} weeks"
+    )]
+    best = max(ranked, key=lambda r: r["GrowthPct"])
+    worst = min(ranked, key=lambda r: r["GrowthPct"])
+    movers = []
+    if best["GrowthPct"] > 0:
+        movers.append(f"{_trend_icon(1)} Top climber {_player(best['PlayerName'])} "
+                      f"{best['GrowthPct']:+.1f}%")
+    if worst["GrowthPct"] < 0:
+        movers.append(f"{_trend_icon(-1)} Biggest drop {_player(worst['PlayerName'])} "
+                      f"{worst['GrowthPct']:+.1f}%")
+    if movers:
+        lines.append(" · ".join(movers))
+    return "\n".join(lines)
+
+
+def trend_headline(metric: str, rows: list[dict[str, Any]], top_n: int = 10) -> str:
+    if not rows:
+        return ""
+    weeks = len({r["WeekStart"] for r in rows})
+    shown = min(top_n, len({r["PlayerName"] for r in rows}))
+    return emojis.with_icon(
+        emojis.metric_icon(metric),
+        f"**{_label(metric)} trend** · top {shown} over {weeks} weeks",
+    )
