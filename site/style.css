@@ -142,3 +142,304 @@ footer {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+/* Landing page */
+:root {
+  --discord-bg: #313338;
+  --discord-embed: #2b2d31;
+  --discord-text: #dbdee1;
+  --discord-muted: #949ba4;
+  --discord-blurple: #5865f2;
+  --good: #16a34a;
+}
+
+body.wide header,
+body.wide main,
+body.wide footer {
+  max-width: 62rem;
+}
+
+.landing p,
+.landing ol,
+.landing ul,
+.landing details {
+  max-width: 46rem;
+}
+
+.landing section {
+  scroll-margin-top: 1rem;
+}
+
+.landing h2 {
+  font-size: 1.5rem;
+  margin-top: 3rem;
+}
+
+.landing h3 {
+  font-size: 1.1rem;
+  margin: 1.75rem 0 0.5rem;
+}
+
+.hero {
+  padding: 2rem 0 1rem;
+}
+
+.hero h1 {
+  font-size: clamp(1.9rem, 5vw, 2.75rem);
+  max-width: 40rem;
+  margin-bottom: 1rem;
+}
+
+.lead {
+  font-size: 1.15rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.9rem;
+}
+
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.button {
+  display: inline-block;
+  padding: 0.7rem 1.3rem;
+  border-radius: 8px;
+  border: 1px solid var(--discord-blurple);
+  background: var(--discord-blurple);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button.secondary {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--border);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.steps {
+  padding-left: 1.4rem;
+}
+
+.steps li {
+  margin-bottom: 0.6rem;
+}
+
+.shot {
+  margin: 1.5rem 0;
+  max-width: 46rem;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.shot figcaption {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 0.4rem;
+}
+
+/* Mock Discord messages: always Discord's dark theme, like the app. */
+.discord {
+  background: var(--discord-bg);
+  color: var(--discord-text);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  font-size: 0.95rem;
+}
+
+.discord p {
+  margin: 0.4rem 0;
+}
+
+.discord code {
+  background: #1e1f22;
+  color: var(--discord-text);
+}
+
+.d-cmd {
+  color: var(--discord-muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.3rem;
+}
+
+.d-author {
+  font-weight: 600;
+  color: #fff;
+}
+
+.d-tag {
+  background: var(--discord-blurple);
+  color: #fff;
+  font-size: 0.65rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-left: 0.25rem;
+}
+
+.d-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: #fff;
+  margin: 0.4rem 0;
+}
+
+.d-embed {
+  background: var(--discord-embed);
+  border-left: 4px solid var(--discord-blurple);
+  border-radius: 4px;
+  padding: 0.5rem 0.9rem;
+  margin-top: 0.4rem;
+  max-width: 30rem;
+}
+
+.d-muted {
+  color: var(--discord-muted);
+  font-size: 0.85rem;
+}
+
+.d-table {
+  width: auto;
+  min-width: 16rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.d-table th,
+.d-table td {
+  border-bottom-color: #3f4147;
+  padding: 0.25rem 0.9rem 0.25rem 0;
+}
+
+.d-table th {
+  background: transparent;
+  color: var(--discord-muted);
+}
+
+.d-table td:last-child,
+.d-table th:last-child {
+  text-align: right;
+}
+
+.d-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 12rem));
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.d-buttons span {
+  background: #4e5058;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.badge {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--todo-bg);
+  color: var(--todo-text);
+}
+
+.plans {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 1rem;
+}
+
+.plan {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  background: var(--surface);
+}
+
+.plan.featured {
+  border: 2px solid var(--accent);
+}
+
+.plan h3 {
+  margin-top: 0;
+}
+
+.plan .price {
+  font-size: 1.9rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.plan .price span {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.plan .annual {
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+}
+
+.plan ul {
+  padding-left: 1.2rem;
+  margin: 0.75rem 0 0;
+}
+
+.plan li {
+  margin-bottom: 0.3rem;
+}
+
+.coming-label {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 1rem 0 0;
+}
+
+.plan ul.coming {
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+
+details {
+  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 0;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.footer-links {
+  font-weight: 600;
+}
