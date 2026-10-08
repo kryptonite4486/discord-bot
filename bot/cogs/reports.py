@@ -376,13 +376,22 @@ class Reports(commands.Cog):
         *,
         file: discord.File | None = None,
         files: list[discord.File] | None = None,
+        headline: str = "",
     ) -> None:
         # Discord does not render markdown tables; use a code block for alignment.
         # Each chunk is a complete ```md … ``` fence so mid-report splits stay valid.
+        # The headline goes above the first fence: custom emojis don't render
+        # inside code blocks. It holds player names, so mentions are off.
         chunks = chunk_fenced_md(text, limit=1900)
+        if headline and chunks and len(headline) + 1 + len(chunks[0]) <= 2000:
+            chunks[0] = f"{headline}\n{chunks[0]}"
+        elif headline:
+            chunks.insert(0, headline[:2000])
         for chunk in chunks:
             payload = chunk if len(chunk) <= 2000 else chunk[:1990] + "\n```"
-            await interaction.followup.send(content=payload)
+            await interaction.followup.send(
+                content=payload, allowed_mentions=discord.AllowedMentions.none()
+            )
         for extra in files or []:
             await interaction.followup.send(file=extra)
         if file is not None:
@@ -431,7 +440,8 @@ class Reports(commands.Cog):
             channel_names=names,
         )
         text += await self._hidden_note(rs, window, week_start=week_start)
-        await self._send_text(interaction, text)
+        headline = formatters.week_summary_headline(week_start, rows)
+        await self._send_text(interaction, text, headline=headline)
 
     @report.command(name="player", description="Trend report for one player")
     @app_commands.describe(
@@ -484,7 +494,8 @@ class Reports(commands.Cog):
             else None
         )
         file = discord.File(png, filename=f"{name}_trend.png") if png else None
-        await self._send_text(interaction, text, file=file)
+        headline = "" if rs.show_channel else formatters.player_headline(name, rows)
+        await self._send_text(interaction, text, file=file, headline=headline)
 
     @report.command(name="versus", description="Versus Points leaderboard for a week")
     @app_commands.describe(
@@ -595,7 +606,8 @@ class Reports(commands.Cog):
             else None
         )
         file = discord.File(png, filename=f"{metric_type}_trend.png") if png else None
-        await self._send_text(interaction, text, file=file)
+        headline = formatters.trend_headline(metric_type, rows)
+        await self._send_text(interaction, text, file=file, headline=headline)
 
     @report.command(name="growth", description="Growth rates for a metric")
     @app_commands.describe(
@@ -678,7 +690,11 @@ class Reports(commands.Cog):
                 else None
             )
             await self._send_text(
-                interaction, text, file=chart, files=attachments
+                interaction,
+                text,
+                file=chart,
+                files=attachments,
+                headline=formatters.growth_headline(metric_type, weeks, rows),
             )
         except AttributeError as exc:
             log.exception("Growth report missing helper — reload formatters")
@@ -785,7 +801,8 @@ class Reports(commands.Cog):
         file = (
             discord.File(png, filename=f"{metric_type}_leaderboard.png") if png else None
         )
-        await self._send_text(interaction, text, file=file)
+        headline = formatters.leaderboard_headline(metric_type, str(resolved_week), rows)
+        await self._send_text(interaction, text, file=file, headline=headline)
 
 
 async def setup(bot: commands.Bot) -> None:
